@@ -1,6 +1,6 @@
 -module(fold_SUITE).
 -include_lib("common_test/include/ct.hrl").
--export([all/0]).
+-export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([
             aae_fold_keyorder/1,
             aae_fold_segmentorder/1]).
@@ -11,6 +11,13 @@ all() -> [
         ].
 
 
+init_per_suite(Config) ->
+    testutil:init_per_suite([{suite, "fold"}|Config]),
+    Config.
+
+end_per_suite(Config) ->
+    testutil:end_per_suite(Config).
+        
 aae_fold_keyorder(_Config) ->
     aae_fold_tester(leveled_ko, 50000).
 
@@ -24,7 +31,7 @@ aae_fold_tester(ParallelStoreType, KeyCount) ->
     SplitF = 
         fun(X) -> 
             T = binary_to_term(X),
-            {leveled_rand:uniform(1000), 1, 0, element(1, T), element(2, T)}
+            {rand:uniform(1000), 1, 0, element(1, T), element(2, T)}
         end,
     
     {ok, Cntrl1} = 
