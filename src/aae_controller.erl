@@ -27,6 +27,7 @@
             aae_start/7,
             aae_start/8,
             aae_nextrebuild/1,
+            aae_schedulenextrebuild/2,
             aae_put/7,
             aae_close/1,
             aae_destroy/1,
@@ -209,6 +210,13 @@ aae_start(
 %% When is the next keystore rebuild process scheduled for
 aae_nextrebuild(Pid) ->
     gen_server:call(Pid, rebuild_time, ?SYNC_TIMEOUT).
+
+-spec aae_schedulenextrebuild(pid(), non_neg_integer()) -> ok.
+%% @doc
+%% Schedule the next keystore rebuild, assuming last rebuild
+%% occurred now + specified delay
+aae_schedulenextrebuild(Pid, Delay) ->
+    gen_server:call(Pid, {schedule_nextrebuild, Delay}, ?SYNC_TIMEOUT).
 
 -spec aae_put(pid(), responsible_preflist(), 
                             aae_keystore:bucket(), aae_keystore:key(),
@@ -578,6 +586,11 @@ init([Opts]) ->
 
 handle_call(rebuild_time, _From, State) ->  
     {reply, State#state.next_rebuild, State};
+handle_call({schedule_rebuild, Delay}, _From, State) ->
+    {Mega, Sec, Micros} = os:timestamp(),
+    Next = schedule_rebuild({Mega, Sec + Delay, Micros},
+                            State#state.rebuild_schedule),
+    {reply, ok, State#state{next_rebuild = Next}};
 handle_call(close, _From, State) ->
     ok = maybe_flush_puts(State#state.key_store, 
                             State#state.objectspecs_queue,
