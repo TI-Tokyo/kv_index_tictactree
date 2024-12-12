@@ -29,6 +29,8 @@
             cache_loglevel/2,
             cache_close/1]).
 
+-export([dirty_segment_count/1]).
+
 -define(PENDING_EXT, ".pnd").
 -define(FINAL_EXT, ".aae").
 -define(START_SQN, 1).
@@ -449,6 +451,12 @@ binary_extractfun(Key, {CurrentHash, OldHash}) ->
                 OldHash bxor AltHash
         end,
     {Key, {is_hash, CurrentHash bxor RemoveH}}.
+
+-spec dirty_segment_count(#state{}) -> non_neg_integer().
+%% @doc
+%% Expose dirty_segments length, for aae-progress-report.
+dirty_segment_count(#state{dirty_segments = A}) ->
+    length(A).
 
 %%%============================================================================
 %%% Test

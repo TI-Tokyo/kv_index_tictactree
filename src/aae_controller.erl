@@ -53,6 +53,10 @@
             hash_clocks/2,
             wrapped_splitobjfun/1]).
 
+-export([get_key_store/1,
+         get_next_rebuild/1,
+         get_tree_caches/1]).
+
 -export([wait_on_sync/5]).
 
 -export([generate_returnfun/2]).
@@ -1370,6 +1374,24 @@ preflist_wrapper_fun(FoldObjectsFun, IndexNs) ->
                 Acc
         end
     end.
+
+-spec get_key_store(#state{}) -> pid() | undefined.
+%% @doc
+%% Expose key_store pid, to gather info for aae-progress-report.
+get_key_store(#state{key_store = A}) ->
+    A.
+
+-spec get_next_rebuild(#state{}) -> erlang:timestamp() | undefined.
+%% @doc
+%% Expose next_rebuild field, to gather info for aae-progress-report.
+get_next_rebuild(#state{next_rebuild = A}) ->
+    A.
+
+-spec get_tree_caches(#state{}) -> tree_caches().
+%% @doc
+%% Expose tree_cahches field, to gather info for aae-progress-report.
+get_tree_caches(#state{tree_caches = A}) ->
+    A.
 
 
 %%%============================================================================
