@@ -69,6 +69,8 @@
             generate_treesegment/1,
             value/3]).
 
+-export([get_last_rebuild/1]).
+
 -record(state, {vnode :: pid()|undefined,
                 store :: pid()|undefined,
                 id = key_store :: any(),
@@ -1290,6 +1292,12 @@ clear_pendingpath(Manifest, RootPath) ->
 disklog_filename(RootPath, GUID) ->
     filename:join(RootPath, GUID ++ ?DISKLOG_EXT).
 
+
+-spec get_last_rebuild(#state{}) -> erlang:timestamp() | never.
+%% @doc
+%% Expose last_rebuild field (used in generation of aae-progress-report).
+get_last_rebuild(#state{last_rebuild = A}) ->
+    A.
 
 
 %%%============================================================================
