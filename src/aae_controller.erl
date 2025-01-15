@@ -30,8 +30,8 @@
          aae_set_rebuild_schedule/2,
          aae_get_rebuild_schedule/1,
          aae_schedulenextrebuild/2,
-         aae_get_storeheads/1,
-         aae_set_storeheads/2,
+         aae_get_object_splitfun/1,
+         aae_set_object_splitfun/2,
          aae_get_key_store/1,
          aae_get_tree_caches/1,
          aae_put/7,
@@ -224,29 +224,30 @@ aae_nextrebuild(Pid) ->
 aae_schedulenextrebuild(Pid, Delay) ->
     gen_server:call(Pid, {schedule_rebuild, Delay}, ?SYNC_TIMEOUT).
 
+-spec aae_get_rebuild_schedule(pid()) -> rebuild_schedule().
+%% @doc
+%% Get rebuild schedule
+aae_get_rebuild_schedule(Pid) ->
+    gen_server:call(Pid, get_rebuild_schedule, ?SYNC_TIMEOUT).
+
 -spec aae_set_rebuild_schedule(pid(), rebuild_schedule()) -> ok.
 %% @doc
 %% Set rebuild schedule
 aae_set_rebuild_schedule(Pid, RS) ->
     gen_server:call(Pid, {set_rebuild_schedule, RS}, ?SYNC_TIMEOUT).
 
--spec aae_get_storeheads(pid()) -> ok.
+-spec aae_get_object_splitfun(pid()) -> function().
 %% @doc
-%% Get storeheads
-aae_get_storeheads(Pid) ->
-    gen_server:call(Pid, get_storeheads, ?SYNC_TIMEOUT).
+%% Get object_splitfun field. It is only used to infer the value of 'storeheads'.
+aae_get_object_splitfun(Pid) ->
+    gen_server:call(Pid, get_object_splitfun, ?SYNC_TIMEOUT).
 
--spec aae_set_storeheads(pid(), boolean()) -> ok.
+-spec aae_set_object_splitfun(pid(), function()) -> ok.
 %% @doc
-%% Set storeheads
-aae_set_storeheads(Pid, A) ->
-    gen_server:call(Pid, {set_storeheads, A}, ?SYNC_TIMEOUT).
-
--spec aae_get_rebuild_schedule(pid()) -> rebuild_schedule().
-%% @doc
-%% Get rebuild schedule
-aae_get_rebuild_schedule(Pid) ->
-    gen_server:call(Pid, get_rebuild_schedule, ?SYNC_TIMEOUT).
+%% Set object_splitfun. Used to emulate re-initing the controller
+%% with a different value of 'storeheads'.
+aae_set_object_splitfun(Pid, A) ->
+    gen_server:call(Pid, {set_object_splitfun, A}, ?SYNC_TIMEOUT).
 
 -spec aae_get_key_store(pid()) -> pid() | undefined.
 %% @doc
@@ -628,18 +629,14 @@ init([Opts]) ->
 
 handle_call(rebuild_time, _From, State) ->  
     {reply, State#state.next_rebuild, State};
-handle_call({set_rebuild_schedule, RS}, _From, State) ->
-    {reply, ok, State#state{rebuild_schedule = RS}};
-handle_call(get_storeheads, _From, State = #state{object_splitfun = WrapObjSplitFun}) ->
-    StoreheadsIsOn = wrapped_splitobjfun(
-                       riak_object:aae_from_object_binary(true)),
-    {reply, (StoreheadsIsOn == WrapObjSplitFun), State};
-handle_call({set_storeheads, A}, _From, State) ->
-    ObjSplitFun = riak_object:aae_from_object_binary(A),
-    WrapObjSplitFun = wrapped_splitobjfun(ObjSplitFun),
-    {reply, ok, State#state{object_splitfun = WrapObjSplitFun}};
 handle_call(get_rebuild_schedule, _From, State = #state{rebuild_schedule = RS}) ->
     {reply, RS, State};
+handle_call({set_rebuild_schedule, RS}, _From, State) ->
+    {reply, ok, State#state{rebuild_schedule = RS}};
+handle_call(get_object_splitfun, _From, State = #state{object_splitfun = A}) ->
+    {reply, A, State};
+handle_call({set_object_splitfun, A}, _From, State) ->
+    {reply, ok, State#state{object_splitfun = A}};
 handle_call(get_key_store, _From, State = #state{key_store = A}) ->
     {reply, A, State};
 handle_call(get_tree_caches, _From, State = #state{tree_caches = A}) ->
