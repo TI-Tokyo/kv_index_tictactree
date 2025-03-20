@@ -797,8 +797,11 @@ mock_vnode_loadexchangeandrebuild_tester(TupleBuckets, PType) ->
         {filter, Bucket3, all, large, all, TS3_4_Range, pre_hash},
         % verify no hangover going into the key range test
     TS3_4_Result = LimiterCheckBucketFun(CheckFiltersMRb),
-    io:format("Exchange in second modified range resulted in ~w~n",
-                [TS3_4_Result]),
+    io:format(
+        "Exchange in second modified range resulted in ~w "
+        "expected ~w differences~n",
+        [TS3_4_Result, length(RplObjListMRb3)]
+    ),
     true = {clock_compare, length(RplObjListMRb3)} == TS3_4_Result,
     
     % check between TS1 and TS2 - should only see 'a' changes, but
