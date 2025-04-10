@@ -2,16 +2,18 @@
 -include_lib("common_test/include/ct.hrl").
 -export([all/0, init_per_suite/1, end_per_suite/1]).
 -export([dual_store_compare_medium_so/1,
-            dual_store_compare_medium_ko/1,
-            dual_store_compare_large_so/1,
-            dual_store_compare_large_ko/1,
-            store_notsupported/1]).
+         dual_store_compare_medium_ko/1,
+         dual_store_compare_large_so/1,
+         dual_store_compare_large_ko/1,
+         store_notsupported/1,
+         get_set_rebuild_schedule/1]).
 
 all() -> [dual_store_compare_medium_so,
-            dual_store_compare_medium_ko,
-            dual_store_compare_large_so,
-            dual_store_compare_large_ko,
-            store_notsupported
+          dual_store_compare_medium_ko,
+          dual_store_compare_large_so,
+          dual_store_compare_large_ko,
+          store_notsupported,
+          get_set_rebuild_schedule
         ].
 
 init_per_suite(Config) ->
@@ -20,6 +22,44 @@ init_per_suite(Config) ->
 
 end_per_suite(Config) ->
     testutil:end_per_suite(Config).
+
+get_set_rebuild_schedule(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    VnodePath1 = filename:join(RootPath, "vnode1/"),
+    SplitF = fun(_X) -> {_SomeSensibleSize = 42, 1, 0, undefined, <<>>} end,
+    RS0 = {1, 300},
+
+    {ok, Cntrl} =
+        aae_controller:aae_start({parallel, leveled_ko},
+                                 true,
+                                 RS0,
+                                 [{2, 0}, {2, 1}],
+                                 VnodePath1,
+                                 SplitF),
+
+    BKVList = testutil:gen_keys([], 100),
+    ok = testutil:put_keys(Cntrl, 2, BKVList, none),
+
+    ok = test_rebuild_schedule(Cntrl, RS0),
+
+    aae_controller:aae_close(Cntrl),
+    RootPath = testutil:reset_filestructure().
+
+test_rebuild_schedule(Cntrl, RS0) ->
+    RS1 = {RS1a, RS1b} = aae_controller:aae_get_rebuild_schedule(Cntrl),
+    RS1 = RS0,
+    ok = aae_controller:aae_set_rebuild_schedule(Cntrl, {RS1a, RS1b + 1}),
+    {RS2a, RS2b} = aae_controller:aae_get_rebuild_schedule(Cntrl),
+    RS1a = RS2a,
+    RS2b = RS1b + 1,
+    ok = aae_controller:aae_set_rebuild_schedule(Cntrl, {RS1a + 1, RS1b}),
+    {RS3a, RS3b} = aae_controller:aae_get_rebuild_schedule(Cntrl),
+    RS3a = RS1a + 1,
+    RS1b = RS3b,
+    ok.
+
+
+
         
 store_notsupported(_Config) ->
     RootPath = testutil:reset_filestructure(),
