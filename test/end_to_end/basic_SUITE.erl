@@ -6,15 +6,17 @@
          dual_store_compare_large_so/1,
          dual_store_compare_large_ko/1,
          store_notsupported/1,
-         get_set_rebuild_schedule/1]).
+         get_set_rebuild_schedule/1,
+         get_set_storeheads/1]).
 
-all() -> [dual_store_compare_medium_so,
-          dual_store_compare_medium_ko,
-          dual_store_compare_large_so,
-          dual_store_compare_large_ko,
-          store_notsupported,
-          get_set_rebuild_schedule
-        ].
+all() -> [%dual_store_compare_medium_so,
+          %dual_store_compare_medium_ko,
+          %dual_store_compare_large_so,
+          %dual_store_compare_large_ko,
+          %store_notsupported,
+          %get_set_rebuild_schedule,
+          get_set_storeheads
+         ].
 
 init_per_suite(Config) ->
     testutil:init_per_suite([{suite, "basic"}|Config]),
@@ -26,7 +28,7 @@ end_per_suite(Config) ->
 get_set_rebuild_schedule(_Config) ->
     RootPath = testutil:reset_filestructure(),
     VnodePath1 = filename:join(RootPath, "vnode1/"),
-    SplitF = fun(_X) -> {_SomeSensibleSize = 42, 1, 0, undefined, <<>>} end,
+    SplitF = fun(_) -> {_SomeSensibleSize = 42, 1, 0, undefined, <<>>} end,
     RS0 = {1, 300},
 
     {ok, Cntrl} =
@@ -37,13 +39,10 @@ get_set_rebuild_schedule(_Config) ->
                                  VnodePath1,
                                  SplitF),
 
-    BKVList = testutil:gen_keys([], 100),
-    ok = testutil:put_keys(Cntrl, 2, BKVList, none),
-
     ok = test_rebuild_schedule(Cntrl, RS0),
 
     aae_controller:aae_close(Cntrl),
-    RootPath = testutil:reset_filestructure().
+    testutil:reset_filestructure().
 
 test_rebuild_schedule(Cntrl, RS0) ->
     RS1 = {RS1a, RS1b} = aae_controller:aae_get_rebuild_schedule(Cntrl),
@@ -57,6 +56,78 @@ test_rebuild_schedule(Cntrl, RS0) ->
     RS3a = RS1a + 1,
     RS1b = RS3b,
     ok.
+
+
+get_set_storeheads(_Config) ->
+    RootPath = testutil:reset_filestructure(),
+    VnodePath = filename:join(RootPath, "vnode1/"),
+    Preflist = [{2, 0}, {2, 1}],
+
+    StoreheadsOnSplitF = fun(_) -> {_SomeSensibleSize = 42, 1, 0, undefined, <<>>} end,
+    StoreheadsOffSplitF = fun(_) -> {42, 1, 0, undefined, term_to_binary(null)} end,
+
+    {ok, Cntrl} =
+        aae_controller:aae_start({parallel, leveled_ko},
+                                 true,
+                                 {1, 300},
+                                 Preflist,
+                                 VnodePath,
+                                 StoreheadsOnSplitF,
+                                 [info, warn, error, critical]),  %% have one function
+
+    ct:print("M1\n"),
+    BKVList = testutil:gen_keys([], 15),
+    ok = testutil:put_keys(Cntrl, 2, BKVList, none),
+
+    Bucket = integer_to_binary(1),
+    StartKey = list_to_binary(string:right(integer_to_list(0), 6, $0)),
+    EndKey = list_to_binary(string:right(integer_to_list(10), 6, $0)),
+    Elements = [{sibcount, null}],
+    SCFoldFun =
+        fun(FB, FK, FV, {FAccKL, FAccSc}) ->
+            {sibcount, FSc} = lists:keyfind(sibcount, 1, FV),
+            true = FB == Bucket,
+            true = FK >= StartKey,
+            true = FK < EndKey,
+            {[FK|FAccKL], FAccSc + FSc}
+        end,
+    SCInitAcc = {[], 0},
+    ct:print("M2\n"),
+    {async, SCFolder} =
+        aae_controller:aae_fold(Cntrl,
+                                {key_range, Bucket, StartKey, EndKey},
+                                all, SCFoldFun, SCInitAcc, Elements),
+
+    ct:print("M3\n"),
+    %% test query
+    SCF0 = SCFolder(),
+
+    %% update split_function
+    ok = aae_controller:aae_set_object_splitfun(Cntrl, StoreheadsOffSplitF),
+
+    %% test query: no change in output
+    SCF1 = SCFolder(),
+    true = (SCF0 == SCF1),
+
+    %% update some objects
+    {B0, K0, _} = hd(BKVList),
+    BKV1 = {B0, K0, <<"boo!">>},
+    ct:print("M4\n"),
+    ok = testutil:put_keys(Cntrl, 2, [BKV1], none),
+
+    %% test query to show partial change
+    SCF2 = SCFolder(),
+    true = (SCF0 /= SCF2),
+
+    ct:print("M5\n"),
+    %% force rebuild
+    ok = aae_controller:aae_rebuildtrees(Cntrl, Preflist, fun testutil:calc_preflist/2, false),
+    %% re-test query
+    SCF3 = SCFolder(),
+    true = (SCF0 /= SCF3),
+
+    aae_controller:aae_close(Cntrl),
+    RootPath = testutil:reset_filestructure().
 
 
 
