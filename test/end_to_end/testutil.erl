@@ -105,17 +105,22 @@ clear_all(RootPath) ->
     lists:foreach(FoldFun, FNs).
 
 gen_keys(KeyList, Count) ->
-    gen_keys(KeyList, Count, 0).
+    gen_keys(KeyList, Count, spread_over_buckets).
 
-gen_keys(KeyList, Count, Floor) when Count == Floor ->
+gen_keys(KeyList, Count, BucketSpec) ->
+    gen_keys(KeyList, Count, BucketSpec, 0).
+
+gen_keys(KeyList, Count, _, Floor) when Count == Floor ->
     KeyList;
-gen_keys(KeyList, Count, Floor) ->
-    Bucket = integer_to_binary(Count rem 5),  
+gen_keys(KeyList, Count, BucketSpec, Floor) ->
+    Bucket = case BucketSpec of
+                 spread_over_buckets -> integer_to_binary(Count rem 5);
+                 _ -> BucketSpec end,
     Key = list_to_binary(string:right(integer_to_list(Count), 6, $0)),
     VersionVector = add_randomincrement([]),
     gen_keys([{Bucket, Key, VersionVector}|KeyList], 
                 Count - 1,
-                Floor).
+                BucketSpec, Floor).
 
 put_keys(Cntrl, NVal, KL) ->
     put_keys(Cntrl, NVal, KL, none).

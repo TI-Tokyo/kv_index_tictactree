@@ -75,59 +75,71 @@ get_set_storeheads(_Config) ->
                                  StoreheadsOnSplitF,
                                  [info, warn, error, critical]),  %% have one function
 
-    ct:print("M1\n"),
-    BKVList = testutil:gen_keys([], 15),
-    ok = testutil:put_keys(Cntrl, 2, BKVList, none),
+    Bucket = <<"b1">>,
+    BKVList = testutil:gen_keys([], 15, Bucket),
+    ct:print("put keys: ~p\n", [BKVList]),
+    {BKVList1, BKVList2} = lists:split(5, BKVList),
+    ok = testutil:put_keys(Cntrl, 2, BKVList1, none),
 
-    Bucket = integer_to_binary(1),
     StartKey = list_to_binary(string:right(integer_to_list(0), 6, $0)),
     EndKey = list_to_binary(string:right(integer_to_list(10), 6, $0)),
-    Elements = [{sibcount, null}],
-    SCFoldFun =
-        fun(FB, FK, FV, {FAccKL, FAccSc}) ->
-            {sibcount, FSc} = lists:keyfind(sibcount, 1, FV),
-            true = FB == Bucket,
-            true = FK >= StartKey,
-            true = FK < EndKey,
-            {[FK|FAccKL], FAccSc + FSc}
-        end,
-    SCInitAcc = {[], 0},
-    ct:print("M2\n"),
-    {async, SCFolder} =
-        aae_controller:aae_fold(Cntrl,
-                                {key_range, Bucket, StartKey, EndKey},
-                                all, SCFoldFun, SCInitAcc, Elements),
+    SCFolder0 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
 
-    ct:print("M3\n"),
     %% test query
-    SCF0 = SCFolder(),
+    SCF0 = SCFolder0(),
+    ct:print("with storeheads on, test query:\n~p\n", [SCF0]),
 
     %% update split_function
     ok = aae_controller:aae_set_object_splitfun(Cntrl, StoreheadsOffSplitF),
+    ct:print("storeheads set to off\n"),
 
     %% test query: no change in output
-    SCF1 = SCFolder(),
+    SCFolder1 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
+
+    SCF1 = SCFolder1(),
+    ct:print("after setting storeheads to off, test query:\n~p\n", [SCF1]),
     true = (SCF0 == SCF1),
 
     %% update some objects
-    {B0, K0, _} = hd(BKVList),
-    BKV1 = {B0, K0, <<"boo!">>},
-    ct:print("M4\n"),
-    ok = testutil:put_keys(Cntrl, 2, [BKV1], none),
+    ok = testutil:put_keys(Cntrl, 2, BKVList2, none),
+    ct:print("put more keys\n"),
 
     %% test query to show partial change
-    SCF2 = SCFolder(),
+    SCFolder2 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
+    SCF2 = SCFolder2(),
+    ct:print("after putting more objects, query returns:\n~p\n", [SCF2]),
     true = (SCF0 /= SCF2),
 
-    ct:print("M5\n"),
     %% force rebuild
-    ok = aae_controller:aae_rebuildtrees(Cntrl, Preflist, fun testutil:calc_preflist/2, false),
+    {ok, _, _} = aae_controller:aae_rebuildtrees(
+                   Cntrl, Preflist, fun testutil:calc_preflist/2, false),
     %% re-test query
-    SCF3 = SCFolder(),
+    ct:print("trees force-rebuilt\n"),
+
+    SCFolder3 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
+    SCF3 = SCFolder3(),
     true = (SCF0 /= SCF3),
 
     aae_controller:aae_close(Cntrl),
     RootPath = testutil:reset_filestructure().
+
+key_range_folder(Cntrl, Bucket, StartKey, EndKey) ->
+    Elements = [{sibcount, null}],
+    SCFoldFun =
+        fun(_FB, FK, FV, {FAccKL, FAccSc}) ->
+            {sibcount, FSc} = lists:keyfind(sibcount, 1, FV),
+            if (FK >= StartKey) and (FK < EndKey) ->
+                    {[FK|FAccKL], FAccSc + FSc};
+               el/=se ->
+                    {FAccSc, FAccSc}
+            end
+        end,
+    SCInitAcc = {[], 0},
+    {async, Folder} =
+        aae_controller:aae_fold(
+          Cntrl, {key_range, Bucket, StartKey, EndKey},
+          all, SCFoldFun, SCInitAcc, Elements),
+    Folder.
 
 
 
