@@ -57,6 +57,9 @@ test_rebuild_schedule(Cntrl, RS0) ->
     RS1b = RS3b,
     ok.
 
+-define(NKEYS, 15).
+-define(NKEYS_IN_RANGE, 9).
+-define(NKEYS_UPDATED, 5).
 
 get_set_storeheads(_Config) ->
     RootPath = testutil:reset_filestructure(),
@@ -72,42 +75,49 @@ get_set_storeheads(_Config) ->
                                  {1, 300},
                                  Preflist,
                                  VnodePath,
-                                 StoreheadsOnSplitF,
+                                 StoreheadsOffSplitF,
                                  [info, warn, error, critical]),  %% have one function
 
     Bucket = <<"b1">>,
-    BKVList = testutil:gen_keys([], 15, Bucket),
-    ct:print("put keys: ~p\n", [BKVList]),
-    {BKVList1, BKVList2} = lists:split(5, BKVList),
-    ok = testutil:put_keys(Cntrl, 2, BKVList1, none),
+    BKVList = testutil:gen_keys([], ?NKEYS, Bucket),
+    {BKVList1, _} = lists:split(?NKEYS_UPDATED, BKVList),
+    ok = testutil:put_keys(Cntrl, 2, BKVList, none),
+    ct:print("put all ~b keys: ~p\n", [?NKEYS, BKVList]),
 
     StartKey = list_to_binary(string:right(integer_to_list(0), 6, $0)),
     EndKey = list_to_binary(string:right(integer_to_list(10), 6, $0)),
+    %% there be 9 keys in the range
     SCFolder0 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
 
     %% test query
     SCF0 = SCFolder0(),
-    ct:print("with storeheads on, test query:\n~p\n", [SCF0]),
+    ?NKEYS_IN_RANGE = length(element(1, SCF0)),
+    ct:print("test query should return a subset of ~b:\n~b indeed\n",
+             [?NKEYS_IN_RANGE, length(element(1, SCF0))]),
 
     %% update split_function
-    ok = aae_controller:aae_set_object_splitfun(Cntrl, StoreheadsOffSplitF),
-    ct:print("storeheads set to off\n"),
+    ok = aae_controller:aae_set_object_splitfun(Cntrl, StoreheadsOnSplitF),
+    ct:print("storeheads now set to on\n"),
 
     %% test query: no change in output
     SCFolder1 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
-
     SCF1 = SCFolder1(),
-    ct:print("after setting storeheads to off, test query:\n~p\n", [SCF1]),
+    ?NKEYS_IN_RANGE = length(element(1, SCF1)),
     true = (SCF0 == SCF1),
+    ct:print("after setting storeheads to off, expect no change in query output:\n"
+             "number of keys returned is still ~b\n",
+             [length(element(1, SCF1))]),
 
     %% update some objects
-    ok = testutil:put_keys(Cntrl, 2, BKVList2, none),
-    ct:print("put more keys\n"),
+    BKVList1Updated =
+        [{B, K, [{<<V/binary, "UPDATED">>, C}]} || {B, K, [{V, C}]} <- BKVList1],
+    ok = testutil:put_keys(Cntrl, 2, BKVList1Updated, none),
+    ct:print("update ~b objects\n", [?NKEYS_UPDATED]),
 
     %% test query to show partial change
     SCFolder2 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
     SCF2 = SCFolder2(),
-    ct:print("after putting more objects, query returns:\n~p\n", [SCF2]),
+    ct:print("after updating, is there a partial change? Query returns:\n~p\n", [SCF2]),
     true = (SCF0 /= SCF2),
 
     %% force rebuild
@@ -118,6 +128,7 @@ get_set_storeheads(_Config) ->
 
     SCFolder3 = key_range_folder(Cntrl, Bucket, StartKey, EndKey),
     SCF3 = SCFolder3(),
+    ct:print("after rebuilding, query returns:\n~p\n", [SCF3]),
     true = (SCF0 /= SCF3),
 
     aae_controller:aae_close(Cntrl),
@@ -131,7 +142,7 @@ key_range_folder(Cntrl, Bucket, StartKey, EndKey) ->
             if (FK >= StartKey) and (FK < EndKey) ->
                     {[FK|FAccKL], FAccSc + FSc};
                el/=se ->
-                    {FAccSc, FAccSc}
+                    {FAccKL, FAccSc}
             end
         end,
     SCInitAcc = {[], 0},
