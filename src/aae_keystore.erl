@@ -58,7 +58,6 @@
         store_fold/8,
         store_fetchclock/3,
         store_bucketlist/1,
-        store_last_rebuild/1,
         store_loglevel/2
     ]
 ).
@@ -443,12 +442,6 @@ store_fetchclock(Pid, Bucket, Key) ->
 store_bucketlist(Pid) ->
     gen_fsm:sync_send_all_state_event(Pid, bucket_list, infinity).
 
--spec store_last_rebuild(pid()) -> erlang:timestamp() | never.
-%% @doc
-%% Get the last rebuild time
-store_last_rebuild(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, last_rebuild, infinity).
-
 -spec store_loglevel(pid(), aae_util:log_levels()) -> ok.
 %% @doc
 %% Alter the log level at runtime
@@ -677,8 +670,6 @@ native({prompt, rebuild_complete}, State) ->
 handle_sync_event(bucket_list, _From, StateName, State) ->
     Folder = bucket_list(State#state.store_type, State#state.store),
     {reply, Folder, StateName, State};
-handle_sync_event(last_rebuild, _From, StateName, State = #state{last_rebuild = A}) ->
-    {reply, A, StateName, State};
 handle_sync_event(current_status, _From, StateName, State) ->
     {reply, {StateName, State#state.current_guid}, StateName, State};
 handle_sync_event(ping, _From, StateName, State) ->
