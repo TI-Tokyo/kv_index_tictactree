@@ -1220,7 +1220,9 @@ produce_report(KeyStore, NextRebuild, TreeCaches) ->
     TotalDirtySegments =
         lists:sum(
           [aae_treecache:cache_segment_count(P) || {_, P} <- TreeCaches]),
-    [{last_rebuild, aae_keystore:store_last_rebuild(KeyStore)},
+    {ok, {LastRebuild, IsEmpty}, _Pid} = aae_keystore:store_startupdata(KeyStore),
+    [{is_empty, IsEmpty},
+     {last_rebuild, LastRebuild},
      {next_rebuild, NextRebuild},
      {total_dirty_segments, TotalDirtySegments}
     ].
