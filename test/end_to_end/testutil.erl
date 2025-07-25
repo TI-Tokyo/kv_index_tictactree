@@ -1,19 +1,25 @@
 -module(testutil).
 
--export([gen_keys/2,
-         gen_keys/3,
-         put_keys/3,
-         put_keys/4,
-         remove_keys/3,
-         gen_riakobjects/3]).
+-export([
+    gen_keys/2,
+    gen_keys/3,
+    put_keys/3,
+    put_keys/4,
+    remove_keys/3,
+    gen_riakobjects/3,
+    get_modify_functions/1
+]).
 -export([calc_preflist/2]).
--export([start_receiver/0,
-         exchange_sendfun/1,
-         exchange_vnodesendfun/1,
-         repair_fun/3]).
--export([reset_filestructure/0,
-         reset_filestructure/2]).
-
+-export([
+    start_receiver/0,
+    exchange_sendfun/1,
+    exchange_vnodesendfun/1,
+    repair_fun/3
+]).
+-export([
+    reset_filestructure/0,
+    reset_filestructure/2
+]).
 
 -export([init_per_suite/1, end_per_suite/1]).
 
@@ -26,10 +32,10 @@ init_per_suite(Config) ->
     LogFormatter =
         {
             logger_formatter,
-                #{
-                    time_designator => $\s,
-                    template => LogTemplate
-                }
+            #{
+                time_designator => $\s,
+                template => LogTemplate
+            }
         },
     {suite, SUITEName} = lists:keyfind(suite, 1, Config),
     FileName = "leveled_" ++ SUITEName ++ "_ct.log",
@@ -41,7 +47,7 @@ init_per_suite(Config) ->
                     max_no_files => 5
                 }
         },
-    
+
     LogFilter =
         fun(LogEvent, LogType) ->
             Meta = maps:get(meta, LogEvent),
@@ -73,13 +79,15 @@ end_per_suite(_Config) ->
 
     ok.
 
-
 reset_filestructure() ->
     reset_filestructure(0, ?ROOT_PATH).
-    
+
 reset_filestructure(Wait, RootPath) ->
-    io:format("Waiting ~w ms to give a chance for all file closes " ++
-                 "to complete~n", [Wait]),
+    io:format(
+        "Waiting ~w ms to give a chance for all file closes " ++
+            "to complete~n",
+        [Wait]
+    ),
     timer:sleep(Wait),
     clear_all(RootPath),
     RootPath.
@@ -90,15 +98,15 @@ clear_all(RootPath) ->
     FoldFun =
         fun(FN) ->
             FFP = filename:join(RootPath, FN),
-            case filelib:is_dir(FFP) of 
+            case filelib:is_dir(FFP) of
                 true ->
                     clear_all(FFP ++ "/");
                 false ->
-                    case filelib:is_file(FFP) of 
+                    case filelib:is_file(FFP) of
                         true ->
                             file:delete(FFP);
                         false ->
-                            ok 
+                            ok
                     end
             end
         end,
@@ -115,49 +123,57 @@ gen_keys(KeyList, Count, BucketSpec) ->
 gen_keys(KeyList, Count, _, Floor) when Count == Floor ->
     KeyList;
 gen_keys(KeyList, Count, BucketSpec, Floor) ->
-    Bucket = case BucketSpec of
-                 spread_over_buckets -> integer_to_binary(Count rem 5);
-                 _ -> BucketSpec end,
+    Bucket =
+        case BucketSpec of
+            spread_over_buckets -> integer_to_binary(Count rem 5);
+            _ -> BucketSpec
+        end,
     Key = list_to_binary(string:right(integer_to_list(Count), 6, $0)),
     VersionVector = add_randomincrement([]),
-    gen_keys([{Bucket, Key, VersionVector}|KeyList],
-                Count - 1,
-                BucketSpec, Floor).
+    gen_keys(
+        [{Bucket, Key, VersionVector} | KeyList],
+        Count - 1,
+        BucketSpec,
+        Floor
+    ).
 
 put_keys(Cntrl, NVal, KL) ->
     put_keys(Cntrl, NVal, KL, none).
 
 put_keys(_Cntrl, _Nval, [], _PrevVV) ->
     ok;
-put_keys(Cntrl, Nval, [{Bucket, Key, VersionVector}|Tail], PrevVV) ->
-    ok = aae_controller:aae_put(Cntrl, 
-                                calc_preflist(Key, Nval), 
-                                Bucket, 
-                                Key, 
-                                VersionVector, 
-                                PrevVV, 
-                                term_to_binary(
-                                    {[os:timestamp()], 
-                                        term_to_binary([{clock, VersionVector}])})),
+put_keys(Cntrl, Nval, [{Bucket, Key, VersionVector} | Tail], PrevVV) ->
+    ok = aae_controller:aae_put(
+        Cntrl,
+        calc_preflist(Key, Nval),
+        Bucket,
+        Key,
+        VersionVector,
+        PrevVV,
+        term_to_binary(
+            {[os:timestamp()], term_to_binary([{clock, VersionVector}])}
+        )
+    ),
     put_keys(Cntrl, Nval, Tail, PrevVV).
 
 remove_keys(_Cntrl, _Nval, []) ->
     ok;
-remove_keys(Cntrl, Nval, [{Bucket, Key, _VV}|Tail]) ->
-    ok = aae_controller:aae_put(Cntrl, 
-                                calc_preflist(Key, Nval), 
-                                Bucket, 
-                                Key, 
-                                none, 
-                                undefined, 
-                                <<>>),
+remove_keys(Cntrl, Nval, [{Bucket, Key, _VV} | Tail]) ->
+    ok = aae_controller:aae_put(
+        Cntrl,
+        calc_preflist(Key, Nval),
+        Bucket,
+        Key,
+        none,
+        undefined,
+        <<>>
+    ),
     remove_keys(Cntrl, Nval, Tail).
-
 
 gen_riakobjects(0, ObjectList, _TupleBuckets) ->
     ObjectList;
 gen_riakobjects(Count, ObjectList, TupleBuckets) ->
-    Bucket = 
+    Bucket =
         case TupleBuckets of
             true ->
                 {?BUCKET_TYPE, integer_to_binary(Count rem 5)};
@@ -166,42 +182,101 @@ gen_riakobjects(Count, ObjectList, TupleBuckets) ->
         end,
     Key = list_to_binary(string:right(integer_to_list(Count), 6, $0)),
     Value = crypto:strong_rand_bytes(512),
-    MD = [{last_modified_date, os:timestamp()}, 
-            {random, rand:uniform(3)}],
-    Obj = #r_object{bucket = Bucket,
-                    key = Key,
-                    contents = [#r_content{metadata = MD, value = Value}]},
-    gen_riakobjects(Count - 1, [Obj|ObjectList], TupleBuckets).
+    MD = [
+        {last_modified_date, os:timestamp()},
+        {random, rand:uniform(3)}
+    ],
+    Obj = #r_object{
+        bucket = Bucket,
+        key = Key,
+        contents = [#r_content{metadata = MD, value = Value}]
+    },
+    gen_riakobjects(Count - 1, [Obj | ObjectList], TupleBuckets).
 
+get_modify_functions(PreflistFun) ->
+    PutFun =
+        fun(Store1, Store2) ->
+            OtherStores =
+                case Store2 of
+                    none -> [];
+                    Store2 -> [Store2]
+                end,
+            fun(Object) ->
+                PL = PreflistFun(null, Object#r_object.key),
+                mock_kv_vnode:put(Store1, Object, PL, OtherStores)
+            end
+        end,
+    DeleteFun =
+        fun(Stores) ->
+            fun(Object) ->
+                PL = PreflistFun(null, Object#r_object.key),
+                lists:foreach(
+                    fun(Store) ->
+                        mock_kv_vnode:backend_delete(
+                            Store,
+                            Object#r_object.bucket,
+                            Object#r_object.key,
+                            PL
+                        )
+                    end,
+                    Stores
+                )
+            end
+        end,
+    RehashFun =
+        fun(Stores) ->
+            fun(Object) ->
+                PL = PreflistFun(null, Object#r_object.key),
+                lists:foreach(
+                    fun(Store) ->
+                        mock_kv_vnode:rehash(
+                            Store,
+                            Object#r_object.bucket,
+                            Object#r_object.key,
+                            PL
+                        )
+                    end,
+                    Stores
+                )
+            end
+        end,
+    {PutFun, DeleteFun, RehashFun}.
 
 add_randomincrement(Clock) ->
     RandIncr = rand:uniform(100),
     RandNode =
         lists:nth(
-            rand:uniform(9), 
+            rand:uniform(9),
             [
-                <<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>,
-                <<"f">>, <<"g">>, <<"h">>, <<"i">>
+                <<"a">>,
+                <<"b">>,
+                <<"c">>,
+                <<"d">>,
+                <<"e">>,
+                <<"f">>,
+                <<"g">>,
+                <<"h">>,
+                <<"i">>
             ]
         ),
-    UpdClock = 
-        case lists:keytake(RandNode, 1, Clock) of 
+    UpdClock =
+        case lists:keytake(RandNode, 1, Clock) of
             false ->
-                [{RandNode, RandIncr}|Clock];
+                [{RandNode, RandIncr} | Clock];
             {value, {RandNode, Incr0}, Rest} ->
-                [{RandNode, Incr0 + RandIncr}|Rest]
+                [{RandNode, Incr0 + RandIncr} | Rest]
         end,
     lists:usort(UpdClock).
 
 calc_preflist(Key, 2) ->
-    case erlang:phash2(Key) band 3 of 
+    case erlang:phash2(Key) band 3 of
         0 ->
             {2, 0};
         _ ->
             {2, 1}
     end;
 calc_preflist(Key, 3) ->
-    case erlang:phash2(Key) band 3 of 
+    case erlang:phash2(Key) band 3 of
         0 ->
             {3, 0};
         1 ->
@@ -213,34 +288,39 @@ calc_preflist(Key, 3) ->
 start_receiver() ->
     receive
         {result, Reply} ->
-            Reply 
+            Reply
     end.
 
-
 exchange_sendfun(Cntrl) ->
-    SendFun = 
+    SendFun =
         fun(Msg, Preflists, Colour) ->
             RPid = self(),
-            ReturnFun = 
-                fun(R) -> 
+            ReturnFun =
+                fun(R) ->
                     aae_exchange:reply(RPid, R, Colour)
                 end,
-            case Msg of 
+            case Msg of
                 fetch_root ->
-                    aae_controller:aae_mergeroot(Cntrl, 
-                                                    Preflists, 
-                                                    ReturnFun);
+                    aae_controller:aae_mergeroot(
+                        Cntrl,
+                        Preflists,
+                        ReturnFun
+                    );
                 {fetch_branches, BranchIDs} ->
-                    aae_controller:aae_mergebranches(Cntrl, 
-                                                        Preflists, 
-                                                        BranchIDs, 
-                                                        ReturnFun);
+                    aae_controller:aae_mergebranches(
+                        Cntrl,
+                        Preflists,
+                        BranchIDs,
+                        ReturnFun
+                    );
                 {fetch_clocks, SegmentIDs} ->
-                    aae_controller:aae_fetchclocks(Cntrl,
-                                                        Preflists,
-                                                        SegmentIDs,
-                                                        ReturnFun,
-                                                        null)
+                    aae_controller:aae_fetchclocks(
+                        Cntrl,
+                        Preflists,
+                        SegmentIDs,
+                        ReturnFun,
+                        null
+                    )
             end
         end,
     SendFun.
@@ -248,22 +328,21 @@ exchange_sendfun(Cntrl) ->
 exchange_vnodesendfun(VN) ->
     fun(Msg, Preflists, Colour) ->
         RPid = self(),
-        ReturnFun = 
-            fun(R) -> 
+        ReturnFun =
+            fun(R) ->
                 aae_exchange:reply(RPid, R, Colour)
             end,
         mock_kv_vnode:exchange_message(VN, Msg, Preflists, ReturnFun)
     end.
 
-
 repair_fun(SourceList, Cntrl, NVal) ->
     Lookup = lists:map(fun({B, K, V}) -> {{B, K}, V} end, SourceList),
-    RepairFun = 
+    RepairFun =
         fun(BucketKeyL) ->
             FoldFun =
-                fun({{B0, K0}, _VCDelta}, Acc) -> 
+                fun({{B0, K0}, _VCDelta}, Acc) ->
                     {{B0, K0}, V0} = lists:keyfind({B0, K0}, 1, Lookup),
-                    [{B0, K0, V0}|Acc]
+                    [{B0, K0, V0} | Acc]
                 end,
             KVL = lists:foldl(FoldFun, [], BucketKeyL),
             ok = put_keys(Cntrl, NVal, KVL)

@@ -1,6 +1,16 @@
+%%%============================================================================
+%%% Non-configurable defaults
+%%%============================================================================
+
 -define(TREE_SIZE, large).
 -define(MAGIC, 53).
--define(HEAD_TAG, h). 
-    % Used in leveled as a Tag for head-only objectsm, used in parallel store
+
+%%%============================================================================
+%%% Tags
+%%%============================================================================
+-define(HEAD_TAG, h).
 -define(RIAK_TAG, o_rkv).
-    % Tag to be used for finding Riakobjects in native store
+
+-if(?OTP_RELEASE < 26).
+-type dynamic() :: any().
+-endif.

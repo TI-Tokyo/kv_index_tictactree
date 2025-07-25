@@ -4,7 +4,7 @@
 
 An Active Anti-Entropy library for Key-Value stores in Erlang.
 
-This is currently a working prototype with basic testing.  The target for the library is to be fully integrated with [Riak KV](https://github.com/basho/riak_kv) for Release 3.0 (Autumn 2018).
+This is currently a working prototype with basic testing.  The target for the library is to be fully integrated with [Riak KV](https://github.com/OpenRiak/riak_kv) for Release 3.0 (Autumn 2018).
 
 The library could in theory be used by any Erlang application wanting to use Merkle trees to compare different data stores, it is designed for Riak but not coupled to Riak.  It is not though a general substitute for Merkle trees when the cryptographic strength of Merkle trees is of importance (e.g. a blockchain implementation).
 
@@ -43,19 +43,17 @@ The AAE exchange should work the same way if two partitions are bing compared, o
 
 [More detail on the design can be found here](docs/DESIGN.md).
 
-[Some further background information can be found here](https://github.com/martinsumner/leveled/blob/master/docs/ANTI_ENTROPY.md).
+[Some further background information can be found here](https://github.com/martinsumner/leveled/blob/develop-3.4/docs/ANTI_ENTROPY.md).
 
 ## Using the Library
 
-Following the [current tests](https://github.com/martinsumner/kv_index_tictactree/blob/master/test/end_to_end/basic_SUITE.erl) presently provides the simplest guide to using the library.  There is also a [`mock_kv_vnode`](https://github.com/martinsumner/kv_index_tictactree/blob/master/test/end_to_end/mock_kv_vnode.erl) process used in these tests, and provides a sample view of how an `aae_controller` could be integrated.
+Following the [current tests](https://github.com/OpenRiak/kv_index_tictactree/blob/openriak-3.4/test/end_to_end/basic_SUITE.erl) presently provides the simplest guide to using the library.  There is also a [`mock_kv_vnode`](https://github.com/OpenRiak/kv_index_tictactree/blob/openriak-3.4/test/end_to_end/mock_kv_vnode.erl) process used in tests, and provides a sample view of how an `aae_controller` could be integrated.
 
 There are two main branches:
 
-[`develop-3.1 - default`](https://github.com/martinsumner/kv_index_tictactree/tree/develop-3.1): Target for the Riak 3.1 release with support for OTP 22 and OTP 24;
+[`openriak-3.4`](https://github.com/OpenRiak/kv_index_tictactree/tree/openriak-3.4): Target for the Riak 3.4 release with support for OTP 24 and OTP 26;
 
-[`develop-3.0`](https://github.com/martinsumner/kv_index_tictactree/tree/develop-3.0): Used in the Riak 3.0 release with support for OTP 20 and OTP 22;
-
-[`develop-2.9`](https://github.com/martinsumner/kv_index_tictactree/tree/develop-2.9): Used in the Riak 2.9 release with support for OTP R16 through to OTP 20.
+[`openriak-3.2`](https://github.com/OpenRiak/kv_index_tictactree/tree/openriak-3.2): Used in the Riak 3.0 release with support for OTP 22.
 
 ### Contributing and Testing
 
@@ -63,11 +61,15 @@ The acceptance criteria for updating kv_index_tictactree is that it passes rebar
 
 To have rebar3 execute the full set of tests, run:
 
-`rebar3 as test do xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose`
+`rebar3 as test do fmt --check, xref, dialyzer, cover --reset, eunit --cover, ct --cover, cover --verbose`
 
 For those with a Quickcheck license, property-based tests can also be run using:
 
 `rebar3 as eqc do eunit --module=aae_eqc`
+
+The library should pass all checks using [WhatsApp Eqwalizer](https://github.com/WhatsApp/eqwalizer):
+
+`elp eqwalize-all`
 
 
 ### Riak KV

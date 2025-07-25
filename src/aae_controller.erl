@@ -8,55 +8,60 @@
 %% - Periodic requests to rebuild
 %% - Requests to startup and shutdown
 %%
-%% 
-
+%%
 
 -module(aae_controller).
 
 -behaviour(gen_server).
--include("include/aae.hrl").
+-include("aae.hrl").
 
--export([init/1,
-         handle_call/3,
-         handle_cast/2,
-         handle_info/2,
-         terminate/2,
-         code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
--export([aae_start/6,
-         aae_start/7,
-         aae_start/8,
-         aae_nextrebuild/1,
-         aae_set_rebuild_schedule/2,
-         aae_get_rebuild_schedule/1,
-         aae_prompt_nextrebuild/2,
-         aae_get_object_splitfun/1,
-         aae_set_object_splitfun/2,
-         aae_put/7,
-         aae_close/1,
-         aae_destroy/1,
-         aae_fetchroot/3,
-         aae_mergeroot/3,
-         aae_fetchbranches/4,
-         aae_mergebranches/4,
-         aae_fetchclocks/5,
-         aae_fetchclocks/7,
-         aae_rebuildtrees/5,
-         aae_rebuildtrees/4,
-         aae_rebuildstore/2,
-         aae_rebuildstore/3,
-         aae_fold/6,
-         aae_fold/8,
-         aae_bucketlist/1,
-         aae_loglevel/2,
-         aae_ping/3,
-         aae_runnerprompt/1,
-         aae_produce_progress_report/1
-        ]).
+-export([
+    aae_start/6,
+    aae_start/7,
+    aae_start/8,
+    aae_start/9,
+    aae_nextrebuild/1,
+    aae_set_rebuild_schedule/2,
+    aae_get_rebuild_schedule/1,
+    aae_prompt_nextrebuild/2,
+    aae_get_object_splitfun/1,
+    aae_set_object_splitfun/2,
+    aae_reset_key_filter/1,
+    aae_put/7,
+    aae_close/1,
+    aae_destroy/1,
+    aae_fetchroot/3,
+    aae_mergeroot/3,
+    aae_fetchbranches/4,
+    aae_mergebranches/4,
+    aae_fetchclocks/5,
+    aae_fetchclocks/7,
+    aae_rebuildtrees/5,
+    aae_rebuildtrees/4,
+    aae_rebuildstore/2,
+    aae_rebuildstore/3,
+    aae_fold/6,
+    aae_fold/8,
+    aae_bucketlist/1,
+    aae_loglevel/2,
+    aae_ping/3,
+    aae_runnerprompt/1,
+    aae_produce_progress_report/1
+]).
 
--export([foldobjects_buildtrees/2,
-         hash_clocks/2,
-         wrapped_splitobjfun/1]).
+-export([
+    hash_clocks/2,
+    wrapped_splitobjfun/1
+]).
 
 -export([wait_on_sync/5]).
 
@@ -73,101 +78,113 @@
 -define(EMPTY, <<>>).
 -define(EMPTY_MD, term_to_binary([])).
 -define(SYNC_TIMEOUT, 60000).
-    % May depend on x2 underlying 30s timeout
+% May depend on x2 underlying 30s timeout
 -define(MAX_RUNNER_QUEUEDEPTH, 4).
 
--record(state, {key_store :: pid()|undefined,
-                tree_caches = [] :: tree_caches(),
-                index_ns = [] :: list(responsible_preflist()),
-                initiate_node_worker_fun,
-                object_splitfun,
-                reliable = false :: boolean(),
-                next_rebuild = os:timestamp() :: erlang:timestamp(),
-                rebuild_schedule :: rebuild_schedule(),
-                broken_trees = false :: boolean(),
-                parallel_keystore = true :: boolean(),
-                objectspecs_queue = [] :: list(),
-                root_path :: list()|undefined,
-                runner :: pid()|undefined,
-                log_levels :: aae_util:log_levels(),
-                runner_queue = [] :: list(runner_work()),
-                queue_backlog = false :: boolean(),
-                block_next_put = false :: boolean()}).
+-record(state, {
+    key_store :: pid(),
+    tree_caches = [] :: tree_caches(),
+    index_ns = [] :: list(responsible_preflist()),
+    object_splitfun,
+    reliable = false :: boolean(),
+    next_rebuild = os:timestamp() :: erlang:timestamp(),
+    rebuild_schedule :: rebuild_schedule(),
+    broken_trees = false :: boolean(),
+    parallel_keystore = true :: boolean(),
+    objectspecs_queue = [] :: list(),
+    root_path :: list(),
+    runner :: pid() | undefined,
+    log_levels :: aae_util:log_levels(),
+    runner_queue = [] :: list(runner_work()),
+    queue_backlog = false :: boolean(),
+    block_next_put = false :: boolean(),
+    key_filter = none :: key_include_fun()
+}).
 
--record(options,
-    {
-        keystore_type :: keystore_type(),
-        store_isempty :: boolean(),
-        rebuild_schedule :: rebuild_schedule(),
-        index_ns :: list(responsible_preflist()),
-        object_splitfun,
-        root_path :: list(),
-        log_levels :: aae_util:log_levels(),
-        leveled_options :: aae_keystore:leveled_options()
-    }
-).
-    
--type controller_state() :: #state{}.
+-record(options, {
+    keystore_type :: keystore_type(),
+    store_isempty :: boolean(),
+    rebuild_schedule :: rebuild_schedule(),
+    index_ns :: list(responsible_preflist()),
+    object_splitfun,
+    root_path :: list(),
+    log_levels :: aae_util:log_levels(),
+    leveled_options :: aae_keystore:leveled_options(),
+    key_filter = none :: key_include_fun()
+}).
 
--type responsible_preflist() :: {integer(), integer()}. 
-        % The responsible preflist is a reference to the partition associated 
-        % with an AAE requirement.  The preflist is a reference to the id of 
-        % the head partition in preflist, and and n-val.
--type tree_caches() 
-        :: list({responsible_preflist(), pid()}).
-        % A map between the responsible_preflist reference and the tree_cache 
-        % for that preflist
--type keystore_type() 
-        :: {parallel, aae_keystore:parallel_stores()}|
-            {native, aae_keystore:native_stores(), pid()}.
-        % Key Store can be native (no separate AAE store required) or
-        % parallel when a seperate Key Store is needed for AAE.  The Type
-        % for parallel stores must be a supported KV store by the aae_keystore
-        % module 
--type rebuild_schedule() 
-        :: {non_neg_integer(), pos_integer()}.
-        % A rebuild schedule, the first integer being the minimum number of 
-        % hours to wait between rebuilds.  The second integer is a number of 
-        % seconds by which to jitter the rebuild.  The actual rebuild will be 
-        % scheduled by adding a random integer number of seconds (between 0 
-        % and the jitter value) to the minimum time
--type version_vector()
-        :: list(tuple())|none.
-        % The version vector is normally a list of tuples.  The vector could 
-        % be none if this is a put of a new item (when the previous vector 
-        % would be none), or a deletion of an existing item (when the current
-        % vector would be none).
-        %
-        % `undefined` is speficially resrved for the case that an object may 
-        % be being replaced but the vnode does not know if it is being 
-        % replaced.  In this case, it is the responsiblity of the controller 
-        % to best determine what the previous version was.
--type returner() :: fun((term()) -> ok).
--type runner_work()
-        :: {work,
-            fun(() -> term()),
-            returner(),
-            fun((term()) -> non_neg_integer())}.
--type object_splitter()
-        :: fun((binary()) ->
-                {pos_integer(), pos_integer(), non_neg_integer(),
-                    list(erlang:timestamp())|undefined, binary()}).
--type fold_objects_fun()
-        :: fun((aae_keystore:bucket(), aae_keystore:key(), term(), list())
-                    -> list()).
--type clock_hash() :: integer()|none.
-        % Hash of the clock which is either an integer 1..(2^32 - 1) or none
-        % to represent there was no clock to hash.  The hash of the clock part
-        % impacts only 27-bits, but may be combined with a hash of the key,
-        % where that has is 0..(2^32 - 1) 
+-define(IS_DEF(Term), Term =/= undefined).
 
--export_type([responsible_preflist/0,
-                keystore_type/0,
-                rebuild_schedule/0,
-                version_vector/0,
-                runner_work/0]).
+-type responsible_preflist() :: {integer(), integer()}.
+% The responsible preflist is a reference to the partition associated
+% with an AAE requirement.  The preflist is a reference to the id of
+% the head partition in preflist, and and n-val.
+-type tree_caches() ::
+    list({responsible_preflist(), pid()}).
+% A map between the responsible_preflist reference and the tree_cache
+% for that preflist
+-type keystore_type() ::
+    {parallel, aae_keystore:parallel_stores()}
+    | {native, aae_keystore:native_stores(), pid()}.
+% Key Store can be native (no separate AAE store required) or
+% parallel when a seperate Key Store is needed for AAE.  The Type
+% for parallel stores must be a supported KV store by the aae_keystore
+% module
+-type rebuild_schedule() ::
+    {non_neg_integer(), pos_integer()}.
+% A rebuild schedule, the first integer being the minimum number of
+% hours to wait between rebuilds.  The second integer is a number of
+% seconds by which to jitter the rebuild.  The actual rebuild will be
+% scheduled by adding a random integer number of seconds (between 0
+% and the jitter value) to the minimum time
+-type version_vector() ::
+    list(tuple()) | none.
+% The version vector is normally a list of tuples.  The vector could
+% be none if this is a put of a new item (when the previous vector
+% would be none), or a deletion of an existing item (when the current
+% vector would be none).
+%
+% `undefined` is specifically reserved for the case that an object may
+% be being replaced but the vnode does not know if it is being
+% replaced.  In this case, it is the responsibility of the controller
+% to best determine what the previous version was.
 
+%% erlfmt:ignore-begin
+%% re-formatting of function types may cause issues for ELP within editors
+-type returner() ::
+    fun((dynamic()) -> 'ok').
+-type runner_work() ::
+    {work, fun(() -> dynamic()), returner(), fun((dynamic()) -> non_neg_integer())}.
+-type object_splitter() ::
+    fun((binary()) ->
+        {
+            pos_integer(),
+            pos_integer(),
+            non_neg_integer(),
+            list(erlang:timestamp()) | undefined,
+            binary()
+        }
+    ).
+-type key_include_fun() ::
+    none |
+    fun(({aae_keystore:bucket(), aae_keystore:key()}|reset) -> boolean()).
+%% erlfmt:ignore-end
 
+-type clock_hash() :: integer() | none.
+% Hash of the clock which is either an integer 1..(2^32 - 1) or none
+% to represent there was no clock to hash.  The hash of the clock part
+% impacts only 27-bits, but may be combined with a hash of the key,
+% where that has is 0..(2^32 - 1)
+
+-export_type([
+    responsible_preflist/0,
+    keystore_type/0,
+    rebuild_schedule/0,
+    version_vector/0,
+    clock_hash/0,
+    runner_work/0,
+    key_include_fun/0
+]).
 
 %%%============================================================================
 %%% API
@@ -184,23 +201,40 @@ aae_start(KeyStoreT, IsEmpty, RS, PLs, Path, ObjSplitFun, LogLevels) ->
         KeyStoreT, IsEmpty, RS, PLs, Path, ObjSplitFun, LogLevels, LeveledOpts
     ).
 
+aae_start(
+    KeyStoreT, IsEmpty, RS, PLs, Path, ObjSplitFun, LogLevels, LeveledOpts
+) ->
+    aae_start(
+        KeyStoreT,
+        IsEmpty,
+        RS,
+        PLs,
+        Path,
+        ObjSplitFun,
+        LogLevels,
+        LeveledOpts,
+        none
+    ).
+
 -spec aae_start(
-    keystore_type(), 
-    boolean(), 
+    keystore_type(),
+    boolean(),
     rebuild_schedule(),
-    list(responsible_preflist()), 
+    list(responsible_preflist()),
     list(),
-    object_splitter(),
-    aae_util:log_levels()|undefined,
-    aae_keystore:leveled_options()) -> {ok, pid()}.
+    fun((term()) -> tuple()),
+    aae_util:log_levels() | undefined,
+    aae_keystore:leveled_options(),
+    key_include_fun()
+) -> {ok, pid()}.
 %% @doc
-%% Start an AAE controller 
-%% The ObjectsplitFun must take a vnode object in a binary form and output 
+%% Start an AAE controller
+%% The ObjectsplitFun must take a vnode object in a binary form and output
 %% {Size, SibCount, IndexHash, LMD, MD}.  If the SplitFun previously outputted
 %% {Size, SibCount, IndexHash, null} that output will be converted
 aae_start(
-        KeyStoreT, IsEmpty, RS, PLs, Path, ObjSplitFun, LogLevels, LeveledOpts
-    ) ->
+    KeyStoreT, IsEmpty, RS, PLs, Path, ObjSplitFun, LogLevels, LeveledOpts, KFF
+) ->
     WrapObjSplitFun = wrapped_splitobjfun(ObjSplitFun),
     AAEopts =
         #options{
@@ -211,9 +245,11 @@ aae_start(
             root_path = Path,
             object_splitfun = WrapObjSplitFun,
             log_levels = LogLevels,
-            leveled_options = LeveledOpts
+            leveled_options = LeveledOpts,
+            key_filter = KFF
         },
-    gen_server:start(?MODULE, [AAEopts], []).
+    {ok, Pid} = gen_server:start(?MODULE, [AAEopts], []),
+    {ok, Pid}.
 
 -spec aae_nextrebuild(pid()) -> erlang:timestamp().
 %% @doc
@@ -252,24 +288,33 @@ aae_get_object_splitfun(Pid) ->
 aae_set_object_splitfun(Pid, A) ->
     gen_server:call(Pid, {set_object_splitfun, A}, ?SYNC_TIMEOUT).
 
+-spec aae_reset_key_filter(pid()) -> boolean().
+%% @doc
+%% Reset the key filter fun (e.g. to clear cache due to a bucket type change)
+aae_reset_key_filter(Pid) ->
+    gen_server:call(Pid, reset_key_filter, ?SYNC_TIMEOUT).
+
 -spec aae_put(
     pid(),
-    responsible_preflist(), 
+    responsible_preflist(),
     aae_keystore:bucket(),
     aae_keystore:key(),
-    version_vector(), version_vector()|undefined,
-    binary()) -> ok.
+    version_vector(),
+    version_vector() | undefined,
+    binary()
+) -> ok.
 %% @doc
-%% Put a change into the AAE system - updating the TicTac tree, and the 
+%% Put a change into the AAE system - updating the TicTac tree, and the
 %% KeyStore where a parallel Keystore is used.
 aae_put(Pid, IndexN, Bucket, Key, CurrentVV, PrevVV, BinaryObj) ->
     gen_server:cast(
-        Pid, {put, IndexN, Bucket, Key, CurrentVV, PrevVV, BinaryObj}).
+        Pid, {put, IndexN, Bucket, Key, CurrentVV, PrevVV, BinaryObj}
+    ).
 
 -spec aae_fetchroot(pid(), list(responsible_preflist()), returner()) -> ok.
 %% @doc
 %% Fetch the roots of AAE tree caches for a list of IndexNs returning an
-%% indexed list of results using ReturnFun - with a result of `false` in the 
+%% indexed list of results using ReturnFun - with a result of `false` in the
 %% special case where no TreeCache exists for that preflist
 %%
 %% The tree cache could be doing a rebuild, and so may not respond immediately
@@ -281,35 +326,39 @@ aae_fetchroot(Pid, IndexNs, ReturnFun) ->
 -spec aae_mergeroot(pid(), list(responsible_preflist()), returner()) -> ok.
 %% @doc
 %% As with aae_fetch root, but now the reply will be just a single root rather
-%% than an indexed list.  The response will now always be a binary - an empty 
+%% than an indexed list.  The response will now always be a binary - an empty
 %% one where the response is false.
 aae_mergeroot(Pid, IndexNs, ReturnFun) ->
     MergeFoldFun =
         fun({_IndexN, Root}, RootAcc) ->
             aae_exchange:merge_root(Root, RootAcc)
         end,
-    WrappedReturnFun = 
+    WrappedReturnFun =
         fun(Result) ->
             MergedResult = lists:foldl(MergeFoldFun, <<>>, Result),
             ReturnFun(MergedResult)
         end,
     gen_server:cast(Pid, {fetch_root, IndexNs, WrappedReturnFun}).
 
--spec aae_fetchbranches(pid(), 
-                        list(responsible_preflist()), list(integer()), 
-                        returner()) -> ok.
+-spec aae_fetchbranches(
+    pid(),
+    list(responsible_preflist()),
+    list(integer()),
+    returner()
+) -> ok.
 %% @doc
 %% Fetch the branches of AAE tree caches for a list of IndexNs returning an
-%% indexed list of results using ReturnFun - with a result of `false` in the 
+%% indexed list of results using ReturnFun - with a result of `false` in the
 %% special case where no TreeCache exists for that preflist
 aae_fetchbranches(Pid, IndexNs, BranchIDs, ReturnFun) ->
     gen_server:cast(Pid, {fetch_branches, IndexNs, BranchIDs, ReturnFun}).
-    
 
-
--spec aae_mergebranches(pid(), 
-                        list(responsible_preflist()), list(integer()), 
-                        returner()) -> ok.
+-spec aae_mergebranches(
+    pid(),
+    list(responsible_preflist()),
+    list(integer()),
+    returner()
+) -> ok.
 %% @doc
 %% As with fetch branches but the results are merged before sending
 aae_mergebranches(Pid, IndexNs, BranchIDs, ReturnFun) ->
@@ -317,78 +366,102 @@ aae_mergebranches(Pid, IndexNs, BranchIDs, ReturnFun) ->
         fun({_IndexN, Branches}, BranchesAcc) ->
             aae_exchange:merge_branches(Branches, BranchesAcc)
         end,
-    WrappedReturnFun = 
+    WrappedReturnFun =
         fun(Result) ->
             MergedResult = lists:foldl(MergeFoldFun, [], Result),
             ReturnFun(MergedResult)
         end,
-    gen_server:cast(Pid, 
-                    {fetch_branches, IndexNs, BranchIDs, WrappedReturnFun}).
-    
+    gen_server:cast(
+        Pid,
+        {fetch_branches, IndexNs, BranchIDs, WrappedReturnFun}
+    ).
 
--spec aae_fetchclocks(pid(), 
-                        list(responsible_preflist()),
-                        list(non_neg_integer()), 
-                            % fetch_clocks assumes "large" tree size
-                        returner(),
-                        null|fun((term(), term()) -> responsible_preflist()))
-                            -> ok.
+-spec aae_fetchclocks(
+    pid(),
+    list(responsible_preflist()),
+    list(non_neg_integer()),
+    % fetch_clocks assumes "large" tree size
+    returner(),
+    null | fun((term(), term()) -> responsible_preflist())
+) ->
+    ok.
 %% @doc
-%% Fetch all the keys and clocks but use the passed in 2-arity function to 
+%% Fetch all the keys and clocks but use the passed in 2-arity function to
 %% determine the IndexN of the object, by applying the function to the bucket
 %% and key
 %%
 %% This is a call, to allow for rehashing of any trees as part of the fetch
 %% operation.  If no rebuild is running, then as well as fetching the clocks
 %% new segment values can be calculated, replacing the old segment values.
-%% By making this a call, the snapshot for the fold is made before any new 
+%% By making this a call, the snapshot for the fold is made before any new
 %% PUTs are received by the vnode - so we know any subseqent changes are not
-%% included in the fold result. 
+%% included in the fold result.
 aae_fetchclocks(Pid, IndexNs, SegmentIDs, ReturnFun, PrefLFun) ->
     aae_fetchclocks(Pid, IndexNs, all, SegmentIDs, all, ReturnFun, PrefLFun).
 
--spec aae_fetchclocks(pid(),
-                        list(responsible_preflist()),
-                        aae_keystore:range_limiter(),
-                        list(non_neg_integer()),
-                        aae_keystore:modified_limiter(),
-                        returner(),
-                        null|fun((term(), term()) -> responsible_preflist()))
-                            -> ok.
-aae_fetchclocks(Pid, IndexNs,
-                RLimiter, SLimiter, LMDLimiter,
-                ReturnFun, PrefLFun) ->
-    gen_server:call(Pid, 
-                    {fetch_clocks, IndexNs, 
-                        RLimiter, SLimiter, LMDLimiter,
-                        ReturnFun, PrefLFun},
-                    ?SYNC_TIMEOUT).
+-spec aae_fetchclocks(
+    pid(),
+    list(responsible_preflist()),
+    aae_keystore:range_limiter(),
+    list(non_neg_integer()),
+    aae_keystore:modified_limiter(),
+    returner(),
+    null | fun((term(), term()) -> responsible_preflist())
+) ->
+    ok.
+aae_fetchclocks(
+    Pid,
+    IndexNs,
+    RLimiter,
+    SLimiter,
+    LMDLimiter,
+    ReturnFun,
+    PrefLFun
+) ->
+    gen_server:call(
+        Pid,
+        {fetch_clocks, IndexNs, RLimiter, SLimiter, LMDLimiter, ReturnFun,
+            PrefLFun},
+        ?SYNC_TIMEOUT
+    ).
 
--spec aae_fold(pid(), 
-                aae_keystore:range_limiter(),
-                aae_keystore:segment_limiter(),
-                fun((term(), term(), term(), term()) -> term()), 
-                any(), 
-                list(aae_keystore:value_element())) ->
-                    {async, fun(() -> term())}.
+-spec aae_fold(
+    pid(),
+    aae_keystore:range_limiter(),
+    aae_keystore:segment_limiter(),
+    fun((term(), term(), term(), term()) -> term()),
+    any(),
+    list(aae_keystore:value_element())
+) ->
+    {async, fun(() -> term())}.
 %% @doc
-%% Return a folder to fold over the keys in the aae_keystore (or native 
+%% Return a folder to fold over the keys in the aae_keystore (or native
 %% keystore if in native mode)
 aae_fold(Pid, RLimiter, SLimiter, FoldObjectsFun, InitAcc, Elements) ->
-    aae_fold(Pid, RLimiter, SLimiter, all, false, 
-                FoldObjectsFun, InitAcc, Elements).
+    aae_fold(
+        Pid,
+        RLimiter,
+        SLimiter,
+        all,
+        false,
+        FoldObjectsFun,
+        InitAcc,
+        Elements
+    ).
 
--spec aae_fold(pid(), 
-                aae_keystore:range_limiter(),
-                aae_keystore:segment_limiter(),
-                aae_keystore:modified_limiter(),
-                aae_keystore:count_limiter(),
-                fun((term(), term(), term(), term()) -> term()),
-                any(), 
-                list(aae_keystore:value_element())) ->
-                    {async, fun(() -> term())}.
+-spec aae_fold(
+    pid(),
+    aae_keystore:range_limiter(),
+    aae_keystore:segment_limiter(),
+    aae_keystore:modified_limiter(),
+    aae_keystore:count_limiter(),
+    fun((term(), term(), term(), term()) -> term()),
+    any(),
+    list(aae_keystore:value_element())
+) ->
+    {async, fun(() -> term())}.
 %% @doc
-%% Return a folder to fold over the keys in the aae_keystore (or native 
+%% Return a folder to fold over the keys in the aae_keystore (or native
 %% keystore if in native mode)
 %%
 %% The fold function will need to be of form fun(B, K, EL, Acc), where EL is
@@ -396,14 +469,22 @@ aae_fold(Pid, RLimiter, SLimiter, FoldObjectsFun, InitAcc, Elements) ->
 %% the request elements, so fold functions should use lists:keyfind/3 to fetch
 %% specifically requested elements rather than assuming the structure of the
 %% ElementList
-aae_fold(Pid, RLimiter, SLimiter, LMDLimiter, MaxObjectCount,
-            FoldObjectsFun, InitAcc, Elements) ->
-    gen_server:call(Pid, 
-                    {fold, 
-                        RLimiter, SLimiter, LMDLimiter, MaxObjectCount,
-                        FoldObjectsFun, InitAcc, 
-                        Elements},
-                    ?SYNC_TIMEOUT).
+aae_fold(
+    Pid,
+    RLimiter,
+    SLimiter,
+    LMDLimiter,
+    MaxObjectCount,
+    FoldObjectsFun,
+    InitAcc,
+    Elements
+) ->
+    gen_server:call(
+        Pid,
+        {fold, RLimiter, SLimiter, LMDLimiter, MaxObjectCount, FoldObjectsFun,
+            InitAcc, Elements},
+        ?SYNC_TIMEOUT
+    ).
 
 -spec aae_close(pid()) -> ok.
 %% @doc
@@ -418,25 +499,26 @@ aae_destroy(Pid) ->
     gen_server:call(Pid, destroy, ?SYNC_TIMEOUT).
 
 -spec aae_rebuildtrees(
-    pid(), 
+    pid(),
     list(responsible_preflist()),
-    fun((aae_keystore:bucket(), aae_keystore:key()) -> term())|null,
+    fun((aae_keystore:bucket(), aae_keystore:key()) -> term()) | null,
     fun((fun(() -> term()), fun((term()) -> ok)) -> ok),
-    boolean()) -> ok|skipped|loading. 
+    boolean()
+) -> ok | skipped | loading.
 %% @doc
 %% Rebuild the tree caches for a store.  Note that this rebuilds the caches
-%% but not the actual key_store itself (required in the case of parallel 
+%% but not the actual key_store itself (required in the case of parallel
 %% stores).  For parallel store, first call aae_rebuildstore before rebuilding
 %% the treecaches.
 %%
 %% This rebuild requires as inputs:
-%% - the Preflists to be rebuilt (we do not assume that preflists stay 
+%% - the Preflists to be rebuilt (we do not assume that preflists stay
 %% constant within a controller)
 %% - a Preflist Fun for native stores (to calculate the IndexN as the preflist
 %% is not stored).  PreflistFun should be a 2-arity function on the Bucket and
 %% Key and return the IndexN
-%% - a 2-arity WorkerFun which can be passed a Fold and a FinishFun e.g. 
-%% WorkerFun(Folder, FinishFun), with the FinishFun to be called once the 
+%% - a 2-arity WorkerFun which can be passed a Fold and a FinishFun e.g.
+%% WorkerFun(Folder, FinishFun), with the FinishFun to be called once the
 %% Fold is complete (being passed the result of the Folder()).
 aae_rebuildtrees(Pid, IndexNs, PreflistFun, WorkerFun, OnlyIfBroken) ->
     case aae_rebuildtrees(Pid, IndexNs, PreflistFun, OnlyIfBroken) of
@@ -448,30 +530,37 @@ aae_rebuildtrees(Pid, IndexNs, PreflistFun, WorkerFun, OnlyIfBroken) ->
     end.
 
 -spec aae_rebuildtrees(
-    pid(), 
+    pid(),
     list(responsible_preflist()),
-    fun((aae_keystore:bucket(), aae_keystore:key()) -> term())|null,
-    boolean()) ->
-        {ok, fun(() -> term()), fun((term()) -> ok)}|skipped|loading.
+    fun((aae_keystore:bucket(), aae_keystore:key()) -> term()) | null,
+    boolean()
+) ->
+    {ok, fun(() -> term()), fun((term()) -> ok)} | skipped | loading.
 %% @doc
 %% Call aae_rebuildtrees/4 to avoid use of a passed in WorkerFun
 aae_rebuildtrees(Pid, IndexNs, PreflistFun, OnlyIfBroken) ->
-    gen_server:call(Pid,
-                    {rebuild_trees, 
-                        IndexNs, PreflistFun, 
-                        OnlyIfBroken},
-                    infinity).
+    gen_server:call(
+        Pid,
+        {rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken},
+        infinity
+    ).
 
--spec aae_rebuildstore(
-    pid(),
-    fun((aae_keystore:bucket(), aae_keystore:key(), term())
-        -> {non_neg_integer(), term()}))
-    ->
-        {ok, fold_objects_fun(), fun((list()) -> ok)}|ok.
+%% erlfmt:ignore-begin
+%% re-formatting of function types may cause issues for ELP within editors
+-type rebuild_folder() ::
+    fun((aae_keystore:bucket(), aae_keystore:key(), term()) ->
+        {
+            non_neg_integer(), term()
+        }
+    ).
+%% erlfmt:ignore-end
+
+-spec aae_rebuildstore(pid(), rebuild_folder()) ->
+    {ok, aae_keystore:fold_fun(), fun((list()) -> ok)} | ok.
 %% @doc
 %% Prompt the rebuild of the actual AAE key store.  This should return an
-%% object fold fun, and a finish fun.  The object fold fun may be skip if it 
-%% is a native store and so no fold is required.  The finish fun should be 
+%% object fold fun, and a finish fun.  The object fold fun may be skip if it
+%% is a native store and so no fold is required.  The finish fun should be
 %% called once the fold is completed (or immediately if the fold fun is skip).
 aae_rebuildstore(Pid, PreflistClockFun) ->
     aae_rebuildstore(Pid, PreflistClockFun, fun handle_corrupted_object/4).
@@ -480,7 +569,8 @@ aae_rebuildstore(Pid, PreflistClockFun, HandleBadObjFun) ->
     gen_server:call(
         Pid,
         {rebuild_store, PreflistClockFun, HandleBadObjFun},
-        infinity).
+        infinity
+    ).
 
 -spec aae_loglevel(pid(), aae_util:log_levels()) -> ok.
 %% @doc
@@ -495,11 +585,11 @@ aae_loglevel(Pid, LogLevels) ->
 aae_bucketlist(Pid) ->
     gen_server:call(Pid, bucket_list, ?SYNC_TIMEOUT).
 
--spec aae_ping(pid(), erlang:timestamp(), pid()|{sync, pos_integer()})
-                                                                -> ok|timeout.
+-spec aae_ping(pid(), erlang:timestamp(), pid() | {sync, pos_integer()}) ->
+    ok | timeout.
 %% @doc
 %% Ping the AAE process and it will return (async) the timer difference between
-%% now and the passed in timestamp.  The calling process may set a threshold, 
+%% now and the passed in timestamp.  The calling process may set a threshold,
 %% and if the timing is over the threshold it may assume the mailbox of the
 %% controller is too large, and instead next send a sync ping so that the
 %% calling process is blocked until the controller can catch up.  It is
@@ -508,6 +598,7 @@ aae_bucketlist(Pid) ->
 %% the controller.
 %% The sync ping will return 'ok'.
 aae_ping(Pid, RequestTime, {sync, Timeout}) ->
+    % eqwalizer:ignore ... wait_on_sync will mask the type checking
     wait_on_sync(gen_server, call, Pid, {ping, RequestTime}, Timeout);
 aae_ping(Pid, RequestTime, From) ->
     gen_server:cast(Pid, {ping, RequestTime, From}).
@@ -527,7 +618,6 @@ aae_runnerprompt(Pid) ->
 aae_produce_progress_report(Pid) ->
     gen_server:call(Pid, produce_report).
 
-
 %%%============================================================================
 %%% gen_server callbacks
 %%%============================================================================
@@ -537,40 +627,43 @@ init([Opts]) ->
     RebuildSchedule = Opts#options.rebuild_schedule,
     LogLevels = Opts#options.log_levels,
     % Start the KeyStore
-    % Need to update the state to reflect the potential need to rebuild the 
+    % Need to update the state to reflect the potential need to rebuild the
     % key store if the shutdown was not clean as expected
-    {ok, State0} = 
-        case Opts#options.keystore_type of 
+    {ok, State0} =
+        case Opts#options.keystore_type of
             {parallel, StoreType} ->
                 StoreRP = filename:join([RootPath, StoreType, ?STORE_PATH]),
                 LeveledOpts = Opts#options.leveled_options,
                 {ok, {LastRebuild, IsEmpty}, Pid} =
                     aae_keystore:store_parallelstart(
-                        StoreRP, StoreType, LogLevels, LeveledOpts),
-                case Opts#options.store_isempty of 
+                        StoreRP, StoreType, LogLevels, LeveledOpts
+                    ),
+                case Opts#options.store_isempty of
                     IsEmpty ->
-                        RebuildTS = 
+                        RebuildTS =
                             schedule_rebuild(LastRebuild, RebuildSchedule),
                         {
                             ok,
                             #state{
-                                key_store = Pid, 
+                                key_store = Pid,
                                 next_rebuild = RebuildTS,
                                 rebuild_schedule = RebuildSchedule,
                                 reliable = true,
-                                parallel_keystore = true
+                                parallel_keystore = true,
+                                root_path = RootPath
                             }
                         };
                     StoreState ->
                         aae_util:log(aae01, [StoreState, IsEmpty], LogLevels),
                         {
-                            ok, 
+                            ok,
                             #state{
-                                key_store = Pid, 
-                                next_rebuild = os:timestamp(), 
+                                key_store = Pid,
+                                next_rebuild = os:timestamp(),
                                 rebuild_schedule = RebuildSchedule,
                                 reliable = false,
-                                parallel_keystore = true
+                                parallel_keystore = true,
+                                root_path = RootPath
                             }
                         }
                 end;
@@ -579,57 +672,60 @@ init([Opts]) ->
                 StoreRP = filename:join([RootPath, StoreType, ?STORE_PATH]),
                 {ok, {LastRebuild, _IsE}, KeyStorePid} =
                     aae_keystore:store_nativestart(
-                        StoreRP, StoreType, BackendPid, LogLevels),
-                RebuildTS = 
+                        StoreRP, StoreType, BackendPid, LogLevels
+                    ),
+                RebuildTS =
                     schedule_rebuild(LastRebuild, RebuildSchedule),
                 {
-                    ok, 
+                    ok,
                     #state{
-                        key_store = KeyStorePid, 
-                        next_rebuild = RebuildTS, 
+                        key_store = KeyStorePid,
+                        next_rebuild = RebuildTS,
                         rebuild_schedule = RebuildSchedule,
                         reliable = true,
-                        parallel_keystore = false
+                        parallel_keystore = false,
+                        root_path = RootPath
                     }
                 }
         end,
 
     % Start the TreeCaches
-    % Trust any cache that is neatly shutdown, and ignore any cache if the 
-    % vnode store is empty.  If caches are not started cleanly as expected 
+    % Trust any cache that is neatly shutdown, and ignore any cache if the
+    % vnode store is empty.  If caches are not started cleanly as expected
     % then the prompt_cacherebuild should trigger for them to be rebuilt from
-    % the AAE KeyStore (if that itself is not pending a rebuild)  
-    StartCacheFun = 
+    % the AAE KeyStore (if that itself is not pending a rebuild)
+    StartCacheFun =
         fun(IndexN, {AllRestored, Caches}) ->
-            {IsRestored, Cache} = 
-                case Opts#options.store_isempty of 
+            {IsRestored, Cache} =
+                case Opts#options.store_isempty of
                     true ->
                         cache(new, IndexN, RootPath, LogLevels);
                     false ->
                         cache(open, IndexN, RootPath, LogLevels)
                 end,
-            {IsRestored and AllRestored, [{IndexN, Cache}|Caches]}
+            {IsRestored and AllRestored, [{IndexN, Cache} | Caches]}
         end,
-    
-    {AllTreesOK, TreeCaches} = 
+
+    {AllTreesOK, TreeCaches} =
         lists:foldl(StartCacheFun, {true, []}, Opts#options.index_ns),
-    
+
     % Start fetch_clocks runner
     {ok, Runner} = aae_runner:runner_start(LogLevels),
 
     aae_util:log(
         aae10, [Opts#options.index_ns, Opts#options.keystore_type], LogLevels
     ),
-    {ok, State0#state{object_splitfun = Opts#options.object_splitfun,
-                        index_ns = Opts#options.index_ns,
-                        tree_caches = TreeCaches,
-                        broken_trees = not AllTreesOK,
-                        root_path = RootPath,
-                        runner = Runner,
-                        log_levels = LogLevels}}.
+    {ok, State0#state{
+        object_splitfun = Opts#options.object_splitfun,
+        key_filter = Opts#options.key_filter,
+        index_ns = Opts#options.index_ns,
+        tree_caches = TreeCaches,
+        broken_trees = not AllTreesOK,
+        runner = Runner,
+        log_levels = LogLevels
+    }}.
 
-
-handle_call(rebuild_time, _From, State) ->  
+handle_call(rebuild_time, _From, State) ->
     {reply, State#state.next_rebuild, State};
 handle_call(get_rebuild_schedule, _From, State = #state{rebuild_schedule = RS}) ->
     {reply, RS, State};
@@ -639,33 +735,36 @@ handle_call(get_object_splitfun, _From, State = #state{object_splitfun = A}) ->
     {reply, A, State};
 handle_call({set_object_splitfun, A}, _From, State) ->
     {reply, ok, State#state{object_splitfun = A}};
+handle_call(reset_key_filter, _From, State) ->
+    {reply, aae_util:maybe_include_key(State#state.key_filter, reset), State};
 handle_call({prompt_nextrebuild, SecsFromNow}, _From, State) ->
     {Mega, Sec, Micros} = os:timestamp(),
     {reply, ok, State#state{next_rebuild = {Mega, Sec + SecsFromNow, Micros}}};
-handle_call(close, _From, State) ->
-    ok = maybe_flush_puts(State#state.key_store, 
-                            State#state.objectspecs_queue,
-                            State#state.parallel_keystore,
-                            true),
-    ok = aae_keystore:store_close(State#state.key_store),
-    CloseTCFun = 
+handle_call(close, _From, State = #state{key_store = KeyStore}) ->
+    ok = maybe_flush_puts(
+        KeyStore,
+        State#state.objectspecs_queue,
+        State#state.parallel_keystore,
+        true
+    ),
+    ok = aae_keystore:store_close(KeyStore),
+    CloseTCFun =
         fun({_IndexN, TreeCache}) ->
             ok = aae_treecache:cache_close(TreeCache)
         end,
     lists:foreach(CloseTCFun, State#state.tree_caches),
     ok = aae_runner:runner_stop(State#state.runner),
     {stop, normal, ok, State};
-handle_call(destroy, _From, State) ->
-    DestroyTCFun = 
+handle_call(destroy, _From, State = #state{key_store = KeyStore}) ->
+    DestroyTCFun =
         fun({_IndexN, TreeCache}) ->
             ok = aae_treecache:cache_destroy(TreeCache)
         end,
     lists:foreach(DestroyTCFun, State#state.tree_caches),
-    ok = aae_keystore:store_destroy(State#state.key_store),
+    ok = aae_keystore:store_destroy(KeyStore),
     ok = aae_runner:runner_stop(State#state.runner),
     {stop, normal, ok, State};
-handle_call({rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken},
-                _From, State) ->
+handle_call({rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken}, _From, State) ->
     KeyStore = State#state.key_store,
     LogLevels = State#state.log_levels,
     DontRebuild = (OnlyIfBroken and not State#state.broken_trees),
@@ -674,24 +773,29 @@ handle_call({rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken},
             {reply, skipped, State};
         false ->
             case aae_keystore:store_currentstatus(KeyStore) of
-                {StateName, _GUID}
-                        when StateName == native; StateName == parallel ->
+                {StateName, _GUID} when
+                    StateName == native; StateName == parallel
+                ->
                     aae_util:log(aae06, [IndexNs], LogLevels),
                     SW = os:timestamp(),
                     % Before the fold flush all the PUTs (if a parallel store)
-                    ok = maybe_flush_puts(KeyStore, 
-                                            State#state.objectspecs_queue,
-                                            State#state.parallel_keystore,
-                                            true),
-                    
+                    ok = maybe_flush_puts(
+                        KeyStore,
+                        State#state.objectspecs_queue,
+                        State#state.parallel_keystore,
+                        true
+                    ),
+
                     % Setup a fold over the store
                     {FoldFun, InitAcc} =
-                        foldobjects_buildtrees(IndexNs, LogLevels),
+                        foldobjects_buildtrees(
+                            IndexNs, LogLevels, State#state.key_filter
+                        ),
                     CheckPresence = (StateName == native) and not OnlyIfBroken,
                     % If performing a scheduled rebuild on a native store
                     % then the fold needs to check for the presence of the key
                     % in the journal, not just the ledger.  Special range value
-                    % is used to trigger CheckPresence 
+                    % is used to trigger CheckPresence
                     Range =
                         case CheckPresence of
                             true ->
@@ -699,36 +803,51 @@ handle_call({rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken},
                             false ->
                                 all
                         end,
-                    {async, Folder} = 
-                        aae_keystore:store_fold(KeyStore, 
-                                                Range, all,
-                                                all, false,
-                                                FoldFun, InitAcc, 
-                                                [{preflist, PreflistFun}, 
-                                                    {hash, null}]),
-                    
+                    {async, Folder} =
+                        aae_keystore:store_fold(
+                            KeyStore,
+                            Range,
+                            all,
+                            all,
+                            false,
+                            FoldFun,
+                            InitAcc,
+                            [
+                                {preflist, PreflistFun},
+                                {hash, null}
+                            ]
+                        ),
+
                     % Handle the current list of responsible preflists for this
                     % vnode having changed since the last call to start or
                     % rebuild the cached trees
-                    SetupCacheFun = 
+                    SetupCacheFun =
                         fun(IndexN, TreeCachesAcc) ->
-                            TreeCache1 = get_treecache(IndexN, State),
+                            TreeCache1 =
+                                get_treecache(
+                                    IndexN,
+                                    State#state.tree_caches,
+                                    State#state.root_path,
+                                    State#state.log_levels
+                                ),
                             ok = aae_treecache:cache_startload(TreeCache1),
-                            [{IndexN, TreeCache1}|TreeCachesAcc]
+                            [{IndexN, TreeCache1} | TreeCachesAcc]
                         end,
                     TreeCaches = lists:foldl(SetupCacheFun, [], IndexNs),
 
                     % Produce a Finishfun to be called at the end of the Folder
-                    % with the input as the results.  This should call 
+                    % with the input as the results.  This should call
                     % rebuild_complete on each Tree cache in turn
                     FinishTreeFun =
                         fun({FoldIndexN, FoldTree}) ->
-                            {FoldIndexN, TreeCache} = 
+                            {FoldIndexN, TreeCache} =
                                 lists:keyfind(FoldIndexN, 1, TreeCaches),
-                            aae_treecache:cache_completeload(TreeCache,
-                                                                FoldTree)
+                            aae_treecache:cache_completeload(
+                                TreeCache,
+                                FoldTree
+                            )
                         end,
-                    FinishFun = 
+                    FinishFun =
                         fun(FoldTreeCaches) ->
                             lists:foreach(FinishTreeFun, FoldTreeCaches),
                             aae_util:log_timer(aae13, [], SW, LogLevels)
@@ -748,25 +867,27 @@ handle_call({rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken},
                     % not a store rebuild) and the store is parallel.  This
                     % might otherwise reschedule an outstanding requirement to
                     % rebuild the store.
-                    RescheduleRequired = 
+                    RescheduleRequired =
                         not (OnlyIfBroken and State#state.parallel_keystore),
                     RebuildTS =
                         case RescheduleRequired of
                             true ->
                                 TS =
-                                    schedule_rebuild(os:timestamp(), 
-                                                State#state.rebuild_schedule),
+                                    schedule_rebuild(
+                                        os:timestamp(),
+                                        State#state.rebuild_schedule
+                                    ),
                                 aae_util:log(aae11, [TS], LogLevels),
                                 TS;
                             false ->
                                 State#state.next_rebuild
                         end,
-                    {reply, 
-                        {ok, Folder, FinishFun}, 
-                        State#state{tree_caches = TreeCaches, 
-                                        index_ns = IndexNs, 
-                                        next_rebuild = RebuildTS,
-                                        broken_trees = false}};
+                    {reply, {ok, Folder, FinishFun}, State#state{
+                        tree_caches = TreeCaches,
+                        index_ns = IndexNs,
+                        next_rebuild = RebuildTS,
+                        broken_trees = false
+                    }};
                 NotReady ->
                     % Normally loading - but could be timeout, because of
                     % loading
@@ -775,72 +896,89 @@ handle_call({rebuild_trees, IndexNs, PreflistFun, OnlyIfBroken},
             end
     end;
 handle_call({rebuild_store, PreflClockFun, HandleBadObjFun}, _From, State) ->
+    KeyStore = State#state.key_store,
     aae_util:log(
         aae12, [State#state.parallel_keystore], State#state.log_levels
     ),
-    ok = maybe_flush_puts(State#state.key_store, 
-                            State#state.objectspecs_queue,
-                            State#state.parallel_keystore,
-                            true),
-    ok = aae_keystore:store_prompt(State#state.key_store, rebuild_start),
-    case State#state.parallel_keystore of 
+    ok = maybe_flush_puts(
+        KeyStore,
+        State#state.objectspecs_queue,
+        State#state.parallel_keystore,
+        true
+    ),
+    ok = aae_keystore:store_prompt(KeyStore, rebuild_start),
+    case State#state.parallel_keystore of
         true ->
             FlushFun =
                 fun(SpecList) ->
-                    flush_load(State#state.key_store, SpecList)
-                end, 
+                    flush_load(KeyStore, SpecList)
+                end,
             FoldObjectsFun =
                 rebuild_fold(
-                    PreflClockFun, State#state.object_splitfun,
+                    PreflClockFun,
+                    State#state.object_splitfun,
                     HandleBadObjFun,
-                    FlushFun),
+                    FlushFun
+                ),
             FinishFun =
                 fun(Acc) ->
                     FlushFun(Acc),
                     ok = aae_keystore:store_prompt(
-                        State#state.key_store, rebuild_complete)
+                        KeyStore, rebuild_complete
+                    )
                 end,
             {reply, {ok, FoldObjectsFun, FinishFun}, State};
         false ->
-            ok = 
+            ok =
                 aae_keystore:store_prompt(
-                    State#state.key_store, rebuild_complete),
+                    KeyStore, rebuild_complete
+                ),
             {reply, ok, State}
     end;
-handle_call({fold, RLimiter, SLimiter, LMDLimiter, MaxObjectCount,
-                    FoldObjectsFun, InitAcc, Elements},  _From, State) ->
-    ok = maybe_flush_puts(State#state.key_store, 
-                            State#state.objectspecs_queue,
-                            State#state.parallel_keystore,
-                            true),
-    R = aae_keystore:store_fold(State#state.key_store, 
-                                RLimiter,
-                                SLimiter,
-                                LMDLimiter,
-                                MaxObjectCount,
-                                FoldObjectsFun, 
-                                InitAcc,
-                                Elements),
+handle_call(
+    {fold, RLimiter, SLimiter, LMDLimiter, MaxObjectCount, FoldObjectsFun,
+        InitAcc, Elements},
+    _From,
+    State
+) ->
+    KeyStore = State#state.key_store,
+    ok = maybe_flush_puts(
+        KeyStore,
+        State#state.objectspecs_queue,
+        State#state.parallel_keystore,
+        true
+    ),
+    R = aae_keystore:store_fold(
+        KeyStore,
+        RLimiter,
+        SLimiter,
+        LMDLimiter,
+        MaxObjectCount,
+        FoldObjectsFun,
+        InitAcc,
+        Elements
+    ),
     {reply, R, State};
-handle_call({fetch_clocks,
-                _IndexNs,
-                _RLimiter, _SegmentIDs, _LMDLimiter,
-                ReturnFun, _PreflFun},
-                    _From, State=#state{queue_backlog=QB}) when QB ->
+handle_call(
+    {fetch_clocks, _IndexNs, _RLimiter, _SegmentIDs, _LMDLimiter, ReturnFun,
+        _PreflFun},
+    _From,
+    State = #state{queue_backlog = QB}
+) when QB ->
     %% There is a backlog of queries for the runner.  Add some dummy work to
     %% the queue.  The dummy work will prevent a snapshot being taken which may
     %% otherwise have to live the length of the queue.  It also makes sure the
     %% exchange response is delayed by the length of the queue - so that the
     %% exchange will still slow down.
     Folder = fun() -> query_backlog end,
-    SizeFun = fun() -> 0 end,
+    SizeFun = fun(_) -> 0 end,
     Queue = State#state.runner_queue ++ [{work, Folder, ReturnFun, SizeFun}],
     {reply, ok, State#state{runner_queue = Queue}};
-handle_call({fetch_clocks,
-                IndexNs, 
-                all, SegmentIDs, all, 
-                ReturnFun, PreflFun},
-                    From, State) ->
+handle_call(
+    {fetch_clocks, IndexNs, all, SegmentIDs, all, ReturnFun, PreflFun},
+    From,
+    State = #state{key_store = KeyStore}
+) when is_pid(KeyStore) ->
     ImmediateReply = State#state.parallel_keystore,
     case ImmediateReply of
         true ->
@@ -855,21 +993,38 @@ handle_call({fetch_clocks,
             ok
     end,
     SegmentMap = lists:map(fun(S) -> {S, 0} end, SegmentIDs),
-    InitMap = 
-        lists:map(fun(IdxN) -> 
-                        {IdxN, get_treecache(IdxN, State), SegmentMap} 
-                    end, 
-                    IndexNs),
+    InitMap =
+        lists:map(
+            fun(IdxN) ->
+                {
+                    IdxN,
+                    get_treecache(
+                        IdxN,
+                        State#state.tree_caches,
+                        State#state.root_path,
+                        State#state.log_levels
+                    ),
+                    SegmentMap
+                }
+            end,
+            IndexNs
+        ),
 
     GUID = leveled_util:generate_uuid(),
-    lists:foreach(fun({_IndexN, Tree, _SegMap}) -> 
-                        ok = aae_treecache:cache_markdirtysegments(Tree, 
-                                                                    SegmentIDs,
-                                                                    GUID)
-                    end,
-                    InitMap),
-    
-    FoldObjFun = 
+    lists:foreach(
+        fun({_IndexN, Tree, _SegMap}) ->
+            ok = aae_treecache:cache_markdirtysegments(
+                Tree,
+                SegmentIDs,
+                GUID
+            )
+        end,
+        InitMap
+    ),
+
+    KFF = State#state.key_filter,
+
+    FoldObjFun =
         fun(B, K, V, {Acc, SubTreeAcc}) ->
             {clock, VC} = lists:keyfind(clock, 1, V),
             {aae_segment, SegID} = lists:keyfind(aae_segment, 1, V),
@@ -877,22 +1032,31 @@ handle_call({fetch_clocks,
             {preflist, PL} = lists:keyfind(preflist, 1, V),
             {PL, T, SegMap} = lists:keyfind(PL, 1, SubTreeAcc),
             {SegID, HashAcc} = lists:keyfind(SegID, 1, SegMap),
-            BinK = aae_util:make_binarykey(B, K),
-            {_, HashToAdd} =  leveled_tictac:tictac_hash(BinK, {is_hash, H}),
-            UpdHash = HashAcc bxor HashToAdd,
-            SegMap0 = lists:keyreplace(SegID, 1, SegMap, {SegID, UpdHash}),
             SubTreeAcc0 =
-                lists:keyreplace(PL, 1, SubTreeAcc,  {PL, T, SegMap0}),
-            {[{B, K, VC}|Acc], SubTreeAcc0}
+                case aae_util:maybe_include_key(KFF, {B, K}) of
+                    true ->
+                        BinK = aae_util:make_binarykey(B, K),
+                        {_, HashToAdd} =
+                            leveled_tictac:tictac_hash(BinK, {is_hash, H}),
+                        UpdHash = HashAcc bxor HashToAdd,
+                        SegMap0 =
+                            lists:keyreplace(
+                                SegID, 1, SegMap, {SegID, UpdHash}
+                            ),
+                        lists:keyreplace(PL, 1, SubTreeAcc, {PL, T, SegMap0});
+                    false ->
+                        SubTreeAcc
+                end,
+            {[{B, K, VC} | Acc], SubTreeAcc0}
         end,
     WrappedFoldObjFun = preflist_wrapper_fun(FoldObjFun, IndexNs),
-    
+
     ReturnFun0 = generate_returnfun(GUID, ReturnFun),
     SizeFun =
         fun({KeyClockList, _SubTree}) ->
             length(KeyClockList)
         end,
-    
+
     Range =
         case (not State#state.parallel_keystore) of
             true ->
@@ -903,23 +1067,34 @@ handle_call({fetch_clocks,
                 all
         end,
 
-    ok = maybe_flush_puts(State#state.key_store, 
-                            State#state.objectspecs_queue,
-                            State#state.parallel_keystore,
-                            true),
-    {async, Folder} = 
-        aae_keystore:store_fold(State#state.key_store, 
-                                Range,
-                                {segments, SegmentIDs, ?TREE_SIZE},
-                                all,
-                                false, 
-                                WrappedFoldObjFun, 
-                                {[], InitMap},
-                                [{preflist, PreflFun}, 
-                                    {clock, null},
-                                    {aae_segment, null},
-                                    {hash, null}]),
-    Queue = State#state.runner_queue ++ [{work, Folder, ReturnFun0, SizeFun}],
+    ok = maybe_flush_puts(
+        KeyStore,
+        State#state.objectspecs_queue,
+        State#state.parallel_keystore,
+        true
+    ),
+    {async, Folder} =
+        aae_keystore:store_fold(
+            KeyStore,
+            Range,
+            {segments, SegmentIDs, ?TREE_SIZE},
+            all,
+            false,
+            WrappedFoldObjFun,
+            {[], InitMap},
+            [
+                {preflist, PreflFun},
+                {clock, null},
+                {aae_segment, null},
+                {hash, null}
+            ]
+        ),
+    Queue =
+        case Folder of
+            Folder when is_function(Folder, 0) ->
+                State#state.runner_queue ++
+                    [{work, Folder, ReturnFun0, SizeFun}]
+        end,
     Backlog = length(Queue) >= ?MAX_RUNNER_QUEUEDEPTH,
     %% If there is a backlog, the queue will remain in backlog state until it
     %% is empty.  Whilst in backlog state, query requests will result in dummy
@@ -932,11 +1107,13 @@ handle_call({fetch_clocks,
         _ ->
             {reply, ok, S0}
     end;
-handle_call({fetch_clocks,
-                IndexNs, 
-                RLimiter, SegmentIDs, LMDLimiter, 
-                ReturnFun, PreflFun},
-                    From, State) ->
+handle_call(
+    {fetch_clocks, IndexNs, RLimiter, SegmentIDs, LMDLimiter, ReturnFun,
+        PreflFun},
+    From,
+    State
+) ->
+    KeyStore = State#state.key_store,
     ImmediateReply = State#state.parallel_keystore,
     case ImmediateReply of
         true ->
@@ -946,7 +1123,7 @@ handle_call({fetch_clocks,
             %% timeout when waiting for maybe_flush_puts/4.  There are
             %% better mechanisms available to slow the calling process in the
             %% case of backlog, avoiding overload - see aae_ping/3.  So, reply
-            %% immediately if in parallel mode 
+            %% immediately if in parallel mode
             gen_server:reply(From, ok);
         _ ->
             %% In native mode, don't want a new PUT to be received before the
@@ -954,11 +1131,11 @@ handle_call({fetch_clocks,
             %% taken
             ok
     end,
-    
-    FoldObjFun = 
+
+    FoldObjFun =
         fun(B, K, V, Acc) ->
             {clock, VC} = lists:keyfind(clock, 1, V),
-            [{B, K, VC}|Acc]
+            [{B, K, VC} | Acc]
         end,
     WrappedFoldObjFun = preflist_wrapper_fun(FoldObjFun, IndexNs),
     SizeFun =
@@ -966,22 +1143,33 @@ handle_call({fetch_clocks,
             length(KeyClockList)
         end,
 
-    ok = maybe_flush_puts(State#state.key_store, 
-                            State#state.objectspecs_queue,
-                            State#state.parallel_keystore,
-                            true),
-    {async, Folder} = 
-        aae_keystore:store_fold(State#state.key_store, 
-                                RLimiter,
-                                {segments, SegmentIDs, ?TREE_SIZE},
-                                LMDLimiter,
-                                false, 
-                                WrappedFoldObjFun, 
-                                [],
-                                [{preflist, PreflFun}, 
-                                    {clock, null},
-                                    {aae_segment, null}]),
-    Queue = State#state.runner_queue ++ [{work, Folder, ReturnFun, SizeFun}],
+    ok = maybe_flush_puts(
+        KeyStore,
+        State#state.objectspecs_queue,
+        State#state.parallel_keystore,
+        true
+    ),
+    {async, Folder} =
+        aae_keystore:store_fold(
+            KeyStore,
+            RLimiter,
+            {segments, SegmentIDs, ?TREE_SIZE},
+            LMDLimiter,
+            false,
+            WrappedFoldObjFun,
+            [],
+            [
+                {preflist, PreflFun},
+                {clock, null},
+                {aae_segment, null}
+            ]
+        ),
+    Queue =
+        case Folder of
+            Folder when is_function(Folder, 0) ->
+                State#state.runner_queue ++
+                    [{work, Folder, ReturnFun, SizeFun}]
+        end,
     Backlog = length(Queue) >= ?MAX_RUNNER_QUEUEDEPTH,
     %% If there is a backlog, the queue will remain in backlog state until it
     %% is empty.  Whilst in backlog state, query requests will result in dummy
@@ -995,16 +1183,24 @@ handle_call({fetch_clocks,
         _ ->
             {reply, ok, S0}
     end;
-handle_call(bucket_list,  _From, State) ->
-    ok = maybe_flush_puts(State#state.key_store, 
-                            State#state.objectspecs_queue,
-                            State#state.parallel_keystore,
-                            true),
+handle_call(bucket_list, _From, State) ->
+    ok = maybe_flush_puts(
+        State#state.key_store,
+        State#state.objectspecs_queue,
+        State#state.parallel_keystore,
+        true
+    ),
     R = aae_keystore:store_bucketlist(State#state.key_store),
     {reply, R, State};
-handle_call(produce_report, _From, State = #state{key_store = KeyStore,
-                                                  next_rebuild = NextRebuild,
-                                                  tree_caches = TreeCaches}) ->
+handle_call(
+    produce_report,
+    _From,
+    State = #state{
+        key_store = KeyStore,
+        next_rebuild = NextRebuild,
+        tree_caches = TreeCaches
+    }
+) ->
     R = produce_report(KeyStore, NextRebuild, TreeCaches),
     {reply, R, State};
 handle_call({ping, RequestTime}, _From, State) ->
@@ -1012,53 +1208,66 @@ handle_call({ping, RequestTime}, _From, State) ->
     aae_util:log(aae15, [T div 1000], State#state.log_levels),
     {reply, ok, State#state{block_next_put = true}}.
 
-
 handle_cast({put, IndexN, Bucket, Key, Clock, PrevClock, BinaryObj}, State) ->
     % Setup
     TreeCaches = State#state.tree_caches,
+    KFF = State#state.key_filter,
     BinaryKey = aae_util:make_binarykey(Bucket, Key),
-    PrevClock0 = 
-        case PrevClock of 
+    PrevClock0 =
+        case PrevClock of
             undefined ->
-                case State#state.parallel_keystore of 
-                    true ->
-                        resolve_clock(Bucket, Key, 
-                                        State#state.key_store, 
-                                        State#state.objectspecs_queue);
-                    false ->
+                case {State#state.parallel_keystore, State#state.key_store} of
+                    {true, PKS} when is_pid(PKS) ->
+                        resolve_clock(
+                            Bucket,
+                            Key,
+                            PKS,
+                            State#state.objectspecs_queue
+                        );
+                    {false, _} ->
                         % An inert change will be generated
                         Clock
                 end;
             _ ->
                 PrevClock
         end,
-                
+
     {CH, OH} = hash_clocks(Clock, PrevClock0),
-    
+
     % Update the TreeCache associated with the Key (should a cache exist for
     % that store)
-    State0 = 
-        case lists:keyfind(IndexN, 1, TreeCaches) of 
-            false ->
+    State0 =
+        case
+            {
+                lists:keyfind(IndexN, 1, TreeCaches),
+                aae_util:maybe_include_key(KFF, {Bucket, Key})
+            }
+        of
+            {false, _} ->
                 % Note that this will eventually end up in the Tree Cache if in
                 % the future the IndexN combination is added to the list of
                 % responsible preflists
-                handle_unexpected_key(Bucket, Key, IndexN, TreeCaches,
-                                        State#state.log_levels),
+                handle_unexpected_key(
+                    Bucket, Key, IndexN, TreeCaches, State#state.log_levels
+                ),
                 State#state{next_rebuild = os:timestamp()};
-            {IndexN, TreeCache} ->
+            {{IndexN, TreeCache}, true} ->
                 ok = aae_treecache:cache_alter(TreeCache, BinaryKey, CH, OH),
+                State;
+            {_, false} ->
+                % i.e. the key is in a bucket that is to be excluded from the
+                % tree cache
                 State
         end,
 
     % Batch up an update to the Key Store
     %
     % If we receive an unexpected key - still include it in the Key Store,
-    % perhaps a new bucket has been configured withe a new IndexN.  When 
+    % perhaps a new bucket has been configured withe a new IndexN.  When
     % the next cache rebuild happens, the latest IndexNs will be passed in and
     % then the unexpected key will be included in the cache
-    case State0#state.parallel_keystore of 
-        true ->
+    case {State0#state.parallel_keystore, State#state.key_store} of
+        {true, KS} when is_pid(KS) ->
             SegmentID = leveled_tictac:keyto_segment48(BinaryKey),
             ObjSpec =
                 generate_objectspec(
@@ -1066,37 +1275,35 @@ handle_cast({put, IndexN, Bucket, Key, Clock, PrevClock, BinaryObj}, State) ->
                     Key,
                     SegmentID,
                     IndexN,
-                    BinaryObj, 
+                    BinaryObj,
                     Clock,
-                    CH, 
+                    CH,
                     State#state.object_splitfun
                 ),
-            UpdSpecL = [ObjSpec|State0#state.objectspecs_queue],
-            case length(UpdSpecL) >= ?BATCH_LENGTH of 
+            UpdSpecL = [ObjSpec | State0#state.objectspecs_queue],
+            case length(UpdSpecL) >= ?BATCH_LENGTH of
                 true ->
                     % Push to the KeyStore as batch is now at least full
                     maybe_flush_puts(
-                        State0#state.key_store,
-                        UpdSpecL,
-                        true,
-                        State#state.block_next_put
+                        KS, UpdSpecL, true, State#state.block_next_put
                     ),
                     {
                         noreply,
                         State0#state{
-                            objectspecs_queue = [], block_next_put = false}
+                            objectspecs_queue = [], block_next_put = false
+                        }
                     };
                 false ->
                     {noreply, State0#state{objectspecs_queue = UpdSpecL}}
             end;
-        false ->
+        _ ->
             {noreply, State0}
     end;
 handle_cast({fetch_root, IndexNs, ReturnFun}, State) ->
-    FetchRootFun = 
+    FetchRootFun =
         fun(IndexN) ->
-            Root = 
-                case lists:keyfind(IndexN, 1, State#state.tree_caches) of 
+            Root =
+                case lists:keyfind(IndexN, 1, State#state.tree_caches) of
                     {IndexN, TreeCache} ->
                         aae_treecache:cache_root(TreeCache);
                     false ->
@@ -1109,10 +1316,10 @@ handle_cast({fetch_root, IndexNs, ReturnFun}, State) ->
     ReturnFun(Result),
     {noreply, State};
 handle_cast({fetch_branches, IndexNs, BranchIDs, ReturnFun}, State) ->
-    FetchBranchFun = 
+    FetchBranchFun =
         fun(IndexN) ->
-            Leaves = 
-                case lists:keyfind(IndexN, 1, State#state.tree_caches) of 
+            Leaves =
+                case lists:keyfind(IndexN, 1, State#state.tree_caches) of
                     {IndexN, TreeCache} ->
                         aae_treecache:cache_leaves(TreeCache, BranchIDs);
                     false ->
@@ -1133,18 +1340,19 @@ handle_cast({log_levels, LogLevels}, State) ->
 handle_cast({ping, RequestTime, From}, State) ->
     From ! {aae_pong, max(0, timer:now_diff(os:timestamp(), RequestTime))},
     {noreply, State#state{block_next_put = true}};
-handle_cast(runner_prompt, State) ->
+handle_cast(runner_prompt, State = #state{runner = Runner}) when
+    is_pid(Runner)
+->
     case State#state.runner_queue of
         [] ->
             %% Only the queue becoming empty can take the queue out of backlog
             %% state
-            ok = aae_runner:runner_work(State#state.runner, queue_empty),
+            ok = aae_runner:runner_work(Runner, queue_empty),
             {noreply, State#state{queue_backlog = false}};
-        [WI|Tail] ->
-            ok = aae_runner:runner_work(State#state.runner, WI),
+        [WI | Tail] ->
+            ok = aae_runner:runner_work(Runner, WI),
             {noreply, State#state{runner_queue = Tail}}
     end.
-
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -1155,63 +1363,72 @@ terminate(_Reason, _State) ->
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
-
 %%%============================================================================
 %%% External functions
 %%%============================================================================
 
 -spec foldobjects_buildtrees(
-    list(responsible_preflist()), aae_util:log_levels()) ->
-        {fold_objects_fun(), list()}.
+    list(responsible_preflist()), aae_util:log_levels(), key_include_fun()
+) ->
+    {aae_keystore:fold_fun(), list()}.
 %% @doc
-%% Return an object fold fun for building hashtrees, with an initialised 
+%% Return an object fold fun for building hashtrees, with an initialised
 %% accumulator
-foldobjects_buildtrees(IndexNs, LogLevels) ->
-    InitMapFun  = 
+foldobjects_buildtrees(IndexNs, LogLevels, KIF) ->
+    InitMapFun =
         fun(IndexN) ->
             {IndexN, leveled_tictac:new_tree(IndexN, ?TREE_SIZE)}
         end,
     InitAcc = lists:map(InitMapFun, IndexNs),
-    
-    FoldObjectsFun = 
+
+    FoldObjectsFun =
         fun(B, K, V, Acc) ->
-            {preflist, IndexN} = lists:keyfind(preflist, 1, V),
-            {hash, Hash} = lists:keyfind(hash, 1, V),
-            BinK = aae_util:make_binarykey(B, K),
-            BinExtractFun = fun(_BK, _V) -> {BinK, {is_hash, Hash}} end,
-            case lists:keyfind(IndexN, 1, Acc) of 
-                {IndexN, Tree} ->
-                    Tree0 = 
-                        leveled_tictac:add_kv(Tree, 
-                                                {null}, {null},
-                                                    % BinExtractfun will ignore
-                                                    % this dummy key and value
-                                                    % and substitute its own 
-                                                    % pre-defined values to 
-                                                    % generate segment ID and 
-                                                    % hash
-                                                BinExtractFun),
-                    lists:keyreplace(IndexN, 1, Acc, {IndexN, Tree0});
+            case aae_util:maybe_include_key(KIF, {B, K}) of
+                true ->
+                    {preflist, IndexN} = lists:keyfind(preflist, 1, V),
+                    {hash, Hash} = lists:keyfind(hash, 1, V),
+                    BinK = aae_util:make_binarykey(B, K),
+                    BinExtractFun =
+                        fun(_BK, _V) -> {BinK, {is_hash, Hash}} end,
+                    case lists:keyfind(IndexN, 1, Acc) of
+                        {IndexN, Tree} ->
+                            Tree0 =
+                                leveled_tictac:add_kv(
+                                    Tree,
+                                    {null},
+                                    {null},
+                                    % BinExtractfun will ignore this dummy
+                                    % key and value and substitute its own
+                                    % pre-defined values to generate
+                                    % segment ID and hash
+                                    BinExtractFun
+                                ),
+                            lists:keyreplace(IndexN, 1, Acc, {IndexN, Tree0});
+                        false ->
+                            aae_util:log(aae14, [IndexN], LogLevels),
+                            Acc
+                    end;
                 false ->
-                    aae_util:log(aae14, [IndexN], LogLevels),
-                    Acc 
+                    Acc
             end
         end,
-    
+
     {FoldObjectsFun, InitAcc}.
 
--spec wrapped_splitobjfun(fun((term()) -> term())) -> object_splitter().
+-spec wrapped_splitobjfun(fun((term()) -> tuple())) -> object_splitter().
 wrapped_splitobjfun(ObjectSplitFun) ->
     fun(Obj) ->
         case ObjectSplitFun(Obj) of
-            {Size, SibCount, IndexHash, Val} ->
+            {Size, SibCount, IndexHash, Val} when
+                is_integer(Size), is_integer(SibCount), is_integer(IndexHash)
+            ->
                 Val0 =
                     case Val of
                         null -> ?EMPTY_MD;
                         ValB when is_binary(ValB) -> ValB
                     end,
                 {Size, SibCount, IndexHash, undefined, Val0};
-            T ->
+            T when is_tuple(T) ->
                 T
         end
     end.
@@ -1219,14 +1436,17 @@ wrapped_splitobjfun(ObjectSplitFun) ->
 produce_report(KeyStore, NextRebuild, TreeCaches) ->
     TotalDirtySegments =
         lists:sum(
-          [aae_treecache:cache_segment_count(P) || {_, P} <- TreeCaches]),
-    {ok, {LastRebuild, IsEmpty}, _Pid} = aae_keystore:store_startupdata(KeyStore),
-    [{is_empty, IsEmpty},
-     {last_rebuild, LastRebuild},
-     {next_rebuild, NextRebuild},
-     {total_dirty_segments, TotalDirtySegments}
+            [aae_treecache:cache_segment_count(P) || {_, P} <- TreeCaches]
+        ),
+    {ok, {LastRebuild, IsEmpty}, _Pid} = aae_keystore:store_startupdata(
+        KeyStore
+    ),
+    [
+        {is_empty, IsEmpty},
+        {last_rebuild, LastRebuild},
+        {next_rebuild, NextRebuild},
+        {total_dirty_segments, TotalDirtySegments}
     ].
-
 
 %%%============================================================================
 %%% Internal functions
@@ -1241,28 +1461,33 @@ rebuild_fold(PreflistClockFun, ObjectSplitFun, HandleBadObjFun, FlushFun) ->
             {IdxN, VC} = PreflistClockFun(B, K, V),
             BinaryKey = aae_util:make_binarykey(B, K),
             SegmentID = leveled_tictac:keyto_segment48(BinaryKey),
-            {CH, _OH} = hash_clocks(VC, none),
-            ObjSpec = 
+            CH =
+                case hash_clocks(VC, none) of
+                    {CurrentH, _OldH} when CurrentH =/= none ->
+                        CurrentH
+                end,
+            ObjSpec =
                 generate_objectspec(
-                    B, K, SegmentID, IdxN, V, VC, CH, ObjectSplitFun),
+                    B, K, SegmentID, IdxN, V, VC, CH, ObjectSplitFun
+                ),
             case length(Acc) >= ?BATCH_LENGTH of
                 true ->
-                    FlushFun([ObjSpec|Acc]),
+                    FlushFun([ObjSpec | Acc]),
                     [];
                 false ->
-                    [ObjSpec|Acc]
+                    [ObjSpec | Acc]
             end
-        catch Error:Reason ->
-            HandleBadObjFun(B, K, Error, Reason),
-            Acc
+        catch
+            Error:Reason ->
+                HandleBadObjFun(B, K, Error, Reason),
+                Acc
         end
     end.
 
-
 -spec generate_returnfun(string(), fun((any()) -> ok)) ->
-            fun(({error, term()}|{list(), list()}) -> ok).
+    fun((dynamic()) -> ok).
 generate_returnfun(GUID, ReturnFun) ->
-    ReplaceFun = 
+    ReplaceFun =
         fun({_IdxN, T, SegM}) ->
             aae_treecache:cache_replacedirtysegments(T, SegM, GUID)
         end,
@@ -1276,31 +1501,32 @@ generate_returnfun(GUID, ReturnFun) ->
         end
     end.
 
--spec get_treecache(responsible_preflist(), controller_state()) -> pid().
+-spec get_treecache(
+    responsible_preflist(), tree_caches(), list(), aae_util:log_levels()
+) -> pid().
 %% @doc
-%% Fetch the tree cache from state, creating a new tree cache if it isn't 
+%% Fetch the tree cache from state, creating a new tree cache if it isn't
 %% present
-get_treecache(IndexN, State)->
-    case lists:keyfind(IndexN, 1, State#state.tree_caches) of 
+get_treecache(IndexN, TreeCaches, RootPath, LogLevels) when ?IS_DEF(RootPath) ->
+    case lists:keyfind(IndexN, 1, TreeCaches) of
         {IndexN, TreeCache0} ->
             TreeCache0;
         false ->
-            LogLevels = State#state.log_levels,
             aae_util:log(aae09, [IndexN], LogLevels),
-            {true, NC} = cache(new, IndexN, State#state.root_path, LogLevels),
+            {true, NC} = cache(new, IndexN, RootPath, LogLevels),
             NC
     end.
 
 -spec resolve_clock(binary(), binary(), pid(), list()) -> version_vector().
 %% @doc
-%% Get the Keystore to return the current clock or none if the key is not 
+%% Get the Keystore to return the current clock or none if the key is not
 %% present
 resolve_clock(Bucket, Key, Store, PutQueue) ->
     QR = lists:foldl(fun check_queuefun/2, {Bucket, Key, false}, PutQueue),
-    case QR of 
+    case QR of
         {Bucket, Key, false} ->
             aae_keystore:store_fetchclock(Store, Bucket, Key);
-        {Bucket, Key, Clock} ->
+        {Bucket, Key, Clock} when is_list(Clock); Clock == none ->
             Clock
     end.
 
@@ -1309,9 +1535,11 @@ check_queuefun(ObjectSpec, {Bucket, Key, false}) ->
         {ok, null} ->
             {Bucket, Key, none};
         {ok, Value} ->
-            Clock = aae_keystore:value(parallel, 
-                                        {clock, null}, 
-                                        {Bucket, Key, Value}),
+            Clock = aae_keystore:value(
+                parallel,
+                {clock, null},
+                {Bucket, Key, Value}
+            ),
             {Bucket, Key, Clock};
         false ->
             {Bucket, Key, false}
@@ -1322,12 +1550,11 @@ check_queuefun(_ObjectSpec, {Bucket, Key, Value}) ->
 -spec maybe_flush_puts(pid(), list(), boolean(), boolean()) -> ok.
 %% @doc
 %% Flush all the puts into the store.  The Puts have been queued with the most
-%% recent PUT at the head.  
+%% recent PUT at the head.
 maybe_flush_puts(Store, ObjSpecL, true, Blocking) ->
     aae_keystore:store_mput(Store, ObjSpecL, Blocking);
 maybe_flush_puts(_Store, _ObjSpecL, false, _Blocking) ->
     ok.
-
 
 -spec flush_load(pid(), list()) -> ok.
 %% @doc
@@ -1337,15 +1564,16 @@ flush_load(Store, ObjSpecL) ->
     aae_keystore:store_mload(Store, ObjSpecL).
 
 -spec cache(
-    new|open, responsible_preflist(), list(), aae_util:log_levels())
-        -> {boolean(), pid()}.
+    new | open, responsible_preflist(), list(), aae_util:log_levels()
+) ->
+    {boolean(), pid()}.
 %% @doc
-%% Start a new tree cache, return a boolean along with the Pid to indicate 
-%% if the opening of the cache was clean (i.e. the cache had been saved and 
+%% Start a new tree cache, return a boolean along with the Pid to indicate
+%% if the opening of the cache was clean (i.e. the cache had been saved and
 %% checksummed correctly when last saved)
 cache(Startup, IndexN, RootPath, LogLevels) ->
     TreeRP = filename:join(RootPath, ?TREE_PATH),
-    case Startup of 
+    case Startup of
         new ->
             {ok, NC} = aae_treecache:cache_new(TreeRP, IndexN, LogLevels),
             {true, NC};
@@ -1353,9 +1581,8 @@ cache(Startup, IndexN, RootPath, LogLevels) ->
             aae_treecache:cache_open(TreeRP, IndexN, LogLevels)
     end.
 
-
--spec schedule_rebuild(erlang:timestamp()|never, rebuild_schedule()) 
-                                                        -> erlang:timestamp().
+-spec schedule_rebuild(erlang:timestamp() | never, rebuild_schedule()) ->
+    erlang:timestamp().
 %% @doc
 %% Set a rebuild time based on the last rebuild time and the rebuild schedule
 schedule_rebuild(never, Schedule) ->
@@ -1365,48 +1592,75 @@ schedule_rebuild({MegaSecs, Secs, MicroSecs}, {MinHours, JitterSeconds}) ->
     SlotSize = JitterSeconds div SlotCount,
     P = self(),
     Slot = erlang:phash2({P, MicroSecs}, SlotCount),
-    NewSecs = 
-        MegaSecs * ?MEGA 
-            + Secs 
-            + MinHours * 3600 + SlotSize * Slot,
+    NewSecs =
+        MegaSecs * ?MEGA +
+            Secs +
+            MinHours * 3600 + SlotSize * Slot,
     {NewSecs div ?MEGA, NewSecs rem ?MEGA, MicroSecs}.
 
-
--spec generate_objectspec(binary(), binary(), leveled_tictac:segment48(), 
-                            tuple(),
-                            binary(), version_vector(), integer()|none, 
-                            object_splitter()) -> tuple().
-%% @doc                            
+-spec generate_objectspec(
+    binary(),
+    binary(),
+    leveled_tictac:segment48(),
+    tuple(),
+    binary(),
+    version_vector(),
+    clock_hash(),
+    object_splitter()
+) -> tuple().
+%% @doc
 %% Generate an object specification for a parallel key store
-generate_objectspec(Bucket, Key, SegmentID, _IndexN,
-                        _BinaryObj, none, _CurrentHash, 
-                        _SplitFun) ->
+generate_objectspec(
+    Bucket,
+    Key,
+    SegmentID,
+    _IndexN,
+    _BinaryObj,
+    none,
+    _CurrentHash,
+    _SplitFun
+) ->
     SegTree_int = aae_keystore:generate_treesegment(SegmentID),
     aae_keystore:define_delobjectspec(Bucket, Key, SegTree_int);
-generate_objectspec(Bucket, Key, SegmentID, IndexN,
-                        BinaryObj, CurrentVV, CurrentHash, 
-                        SplitFun) ->
+generate_objectspec(
+    Bucket,
+    Key,
+    SegmentID,
+    IndexN,
+    BinaryObj,
+    CurrentVV,
+    CurrentHash,
+    SplitFun
+) ->
     SegTree_int = aae_keystore:generate_treesegment(SegmentID),
-    Value = aae_keystore:generate_value(IndexN, 
-                                        SegTree_int,
-                                        CurrentVV, 
-                                        CurrentHash, 
-                                        SplitFun(BinaryObj)),
+    Value = aae_keystore:generate_value(
+        IndexN,
+        SegTree_int,
+        CurrentVV,
+        CurrentHash,
+        SplitFun(BinaryObj)
+    ),
     aae_keystore:define_addobjectspec(Bucket, Key, Value).
 
-
--spec handle_unexpected_key(binary(), binary(), tuple(),
-                            list(tuple()), aae_util:log_levels()) -> ok.
+-spec handle_unexpected_key(
+    binary(),
+    binary(),
+    tuple(),
+    list(tuple()),
+    aae_util:log_levels()
+) -> ok.
 %% @doc
 %% Log out that an unexpected key has been seen
 handle_unexpected_key(Bucket, Key, IndexN, TreeCaches, LogLevels) ->
-    RespPreflists = lists:map(fun({RP, _TC}) ->  RP end, TreeCaches),
-    aae_util:log(aae03, [Bucket, Key, IndexN, RespPreflists], LogLevels).
+    RespPreflists = lists:map(fun({RP, _TC}) -> RP end, TreeCaches),
+    ok = aae_util:log(aae03, [Bucket, Key, IndexN, RespPreflists], LogLevels),
+    ok.
 
 -spec hash_clocks(
-    version_vector(), version_vector()) -> {clock_hash(), clock_hash()}.
+    version_vector(), version_vector()
+) -> {clock_hash(), clock_hash()}.
 %% @doc
-%% Hash the version vectors, if there is one 
+%% Hash the version vectors, if there is one
 hash_clocks(CurrentVV, PrevVV) ->
     {hash_clock(CurrentVV), hash_clock(PrevVV)}.
 
@@ -1416,20 +1670,24 @@ hash_clock(Clock) ->
     erlang:phash2(lists:sort(Clock)).
 
 -spec wait_on_sync(
-    atom(), atom(), pid(), tuple()|atom(), pos_integer()) -> any().
+    atom(), atom(), pid(), tuple() | atom(), pos_integer()
+) -> any().
 %% @doc
 %% Wait on a sync call until timeout - but don't crash on the timeout
 wait_on_sync(Mod, Fun, Pid, Call, Timeout) ->
-    try Mod:Fun(Pid, Call, Timeout)
-    catch exit:{timeout, _} -> timeout
+    try
+        Mod:Fun(Pid, Call, Timeout)
+    catch
+        exit:{timeout, _} -> timeout
     end.
 
 -spec preflist_wrapper_fun(
-        fun((term(), term(), term(), term()) -> term()),
-        list(responsible_preflist())) -> 
-        fun((term(), term(), term(), term()) -> term()).
+    fun((term(), term(), term(), term()) -> term()),
+    list(responsible_preflist())
+) ->
+    fun((term(), term(), term(), term()) -> term()).
 preflist_wrapper_fun(FoldObjectsFun, IndexNs) ->
-    fun(B, K, V, Acc) ->
+    fun(B, K, V, Acc) when is_list(V) ->
         {preflist, PL} = lists:keyfind(preflist, 1, V),
         case lists:member(PL, IndexNs) of
             true ->
@@ -1456,22 +1714,23 @@ rebuild_fold_bad_test() ->
     BadPreflistClockFun = fun(_B, _K, _V) -> throw({error, badarg}) end,
     GoodPreflistClockFun = fun(_B, _K, _V) -> {0, [{a, 1}]} end,
     BadSplitObjFun = fun(_Obj) -> throw({error, badarg}) end,
-    FlushFun = fun(_L) ->  ok end,
-    FoldFunA = 
+    FlushFun = fun(_L) -> ok end,
+    FoldFunA =
         rebuild_fold(
             BadPreflistClockFun,
             BadSplitObjFun,
             fun handle_corrupted_object/4,
-            FlushFun),
+            FlushFun
+        ),
     FoldFunB =
         rebuild_fold(
             GoodPreflistClockFun,
             BadSplitObjFun,
             fun handle_corrupted_object/4,
-            FlushFun),
+            FlushFun
+        ),
     ?assertMatch([], FoldFunA(<<"B">>, <<"K">>, <<"V">>, [])),
     ?assertMatch([], FoldFunB(<<"B">>, <<"K">>, <<"V">>, [])).
-
 
 rebuild_notempty_test() ->
     RootPath = "test/notemptycntrllr/",
@@ -1479,23 +1738,37 @@ rebuild_notempty_test() ->
     {ok, Cntrl0} = start_wrap(false, RootPath, leveled_so),
     NRB0 = aae_nextrebuild(Cntrl0),
     ?assertMatch(true, NRB0 < os:timestamp()),
-    
+
     % Shutdown was with rebuild due - so should not reset the rebuild to
-    % future 
+    % future
     ok = aae_close(Cntrl0),
     {ok, Cntrl1} = start_wrap(false, RootPath, leveled_so),
     NRB1 = aae_nextrebuild(Cntrl1),
     ?assertMatch(true, NRB1 < os:timestamp()),
 
-    ok = aae_put(Cntrl1, ?TEST_DEFAULT_PARTITION, 
-                <<"B">>, <<"K">>, [{a, 1}], none, <<>>),
+    ok = aae_put(
+        Cntrl1,
+        ?TEST_DEFAULT_PARTITION,
+        <<"B">>,
+        <<"K">>,
+        [{a, 1}],
+        none,
+        <<>>
+    ),
     NRB1 = aae_nextrebuild(Cntrl1),
-    ok = aae_put(Cntrl1, ?ALTERNATIVE_PARTITION, 
-                <<"B">>, <<"K0">>, [{a, 1}], none, <<>>),
+    ok = aae_put(
+        Cntrl1,
+        ?ALTERNATIVE_PARTITION,
+        <<"B">>,
+        <<"K0">>,
+        [{a, 1}],
+        none,
+        <<>>
+    ),
     NRB2 = aae_nextrebuild(Cntrl1),
     ?assertMatch(true, NRB2 > NRB1),
     ?assertMatch(true, NRB2 < os:timestamp()),
-    % The rebuild time should have been reset 
+    % The rebuild time should have been reset
     ok = aae_close(Cntrl1),
     aae_util:clean_subdir(RootPath).
 
@@ -1505,54 +1778,62 @@ rebuild_onempty_test() ->
     {ok, Cntrl0} = start_wrap(true, RootPath, leveled_so),
     NRB0 = aae_nextrebuild(Cntrl0),
     ?assertMatch(false, NRB0 < os:timestamp()),
-    
-    % Shutdown and startup 
+
+    % Shutdown and startup
     ok = aae_close(Cntrl0),
     {ok, Cntrl1} = start_wrap(true, RootPath, leveled_so),
     NRB1 = aae_nextrebuild(Cntrl1),
     ?assertMatch(false, NRB1 < os:timestamp()),
-    
+
     % Shutdown then startup with wrong ISEmpty state
     ok = aae_close(Cntrl1),
     {ok, Cntrl2} = start_wrap(false, RootPath, leveled_so),
     NRB2 = aae_nextrebuild(Cntrl2),
     ?assertMatch(true, NRB2 < os:timestamp()),
-    
+
     ok = aae_close(Cntrl2),
     aae_util:clean_subdir(RootPath).
 
-
 shutdown_parallel_rebuild_test() ->
-    Start = 
+    Start =
         calendar:datetime_to_gregorian_seconds(
-            calendar:now_to_datetime(os:timestamp())),
+            calendar:now_to_datetime(os:timestamp())
+        ),
     RootPath = "test/shutdownpllrbld/",
     aae_util:clean_subdir(RootPath),
     {ok, Cntrl0} = start_wrap(true, RootPath, leveled_so),
-    ok = aae_put(Cntrl0, 
-                    ?TEST_DEFAULT_PARTITION, 
-                    <<"B">>, <<"K">>, [{a, 1}], [], <<>>),
+    ok = aae_put(
+        Cntrl0,
+        ?TEST_DEFAULT_PARTITION,
+        <<"B">>,
+        <<"K">>,
+        [{a, 1}],
+        [],
+        <<>>
+    ),
     NR_TS0 = calendar:now_to_datetime(aae_nextrebuild(Cntrl0)),
     GS_TS0 = calendar:datetime_to_gregorian_seconds(NR_TS0),
     ?assertMatch(true, GS_TS0 > (?TEST_MINHOURS * 3600 + Start)),
     ok = aae_close(Cntrl0),
 
-    TreePath = 
+    TreePath =
         filename:join(RootPath, ?TREE_PATH) ++ "/",
     aae_util:clean_subdir(TreePath),
 
     {ok, Cntrl1} = start_wrap(false, RootPath, leveled_so),
-    ok = aae_rebuildtrees(Cntrl1, 
-                            [?TEST_DEFAULT_PARTITION], 
-                            null, workerfun(fun(ok) -> ok end), 
-                            true),
+    ok = aae_rebuildtrees(
+        Cntrl1,
+        [?TEST_DEFAULT_PARTITION],
+        null,
+        workerfun(fun(ok) -> ok end),
+        true
+    ),
     NR_TS1 = calendar:now_to_datetime(aae_nextrebuild(Cntrl1)),
     GS_TS1 = calendar:datetime_to_gregorian_seconds(NR_TS1),
     ?assertMatch(true, GS_TS1 > (?TEST_MINHOURS * 3600 + Start)),
 
     ok = aae_close(Cntrl1),
     aae_util:clean_subdir(RootPath).
-
 
 overload_runner_test_() ->
     {timeout, 60, fun overloadrunner_tester/0}.
@@ -1575,17 +1856,18 @@ vary_indexnso_test_() ->
 vary_indexnlo_test_() ->
     {timeout, 60, fun() -> varyindexn_cache_rebuild_tester(leveled_ko) end}.
 
-
 overloadrunner_tester() ->
     RootPath = "test/overloadrunner/",
     aae_util:clean_subdir(RootPath),
     {ok, Cntrl0} = start_wrap(false, RootPath, leveled_so),
     ok = aae_put(Cntrl0, {1, 3}, <<"B">>, <<"K">>, [{a, 1}], [], <<>>),
     BinaryKey1 = aae_util:make_binarykey(<<"B">>, <<"K">>),
-    SegID1 = 
-        leveled_tictac:get_segment(leveled_tictac:keyto_segment32(BinaryKey1), 
-                                    ?TREE_SIZE),
-    
+    SegID1 =
+        leveled_tictac:get_segment(
+            leveled_tictac:keyto_segment32(BinaryKey1),
+            ?TREE_SIZE
+        ),
+
     RPid = self(),
     ReturnFun = fun(R) -> RPid ! {result, R} end,
 
@@ -1597,7 +1879,7 @@ overloadrunner_tester() ->
         fun(_N) ->
             Result0 = start_receiver(),
             io:format("Result0 of ~w~n", [Result0]),
-            ?assertMatch([{<<"B">>,<<"K">>,[{a,1}]}], Result0)
+            ?assertMatch([{<<"B">>, <<"K">>, [{a, 1}]}], Result0)
         end,
     lists:foreach(FetchFun, lists:seq(1, ?MAX_RUNNER_QUEUEDEPTH + 1)),
     lists:foreach(CatchFun, lists:seq(1, ?MAX_RUNNER_QUEUEDEPTH)),
@@ -1610,54 +1892,61 @@ overloadrunner_tester() ->
     ok = aae_close(Cntrl0),
     aae_util:clean_subdir(RootPath).
 
-
 shutdown_parallel_tester() ->
     RootPath = "test/shutdownpll/",
     aae_util:clean_subdir(RootPath),
     {ok, Cntrl0} = start_wrap(false, RootPath, leveled_so),
     ok = aae_put(Cntrl0, {1, 3}, <<"B">>, <<"K">>, [{a, 1}], [], <<>>),
     BinaryKey1 = aae_util:make_binarykey(<<"B">>, <<"K">>),
-    SegmentID1 = 
-        leveled_tictac:get_segment(leveled_tictac:keyto_segment32(BinaryKey1), 
-                                    ?TREE_SIZE),
-    
+    SegmentID1 =
+        leveled_tictac:get_segment(
+            leveled_tictac:keyto_segment32(BinaryKey1),
+            ?TREE_SIZE
+        ),
+
     RPid = self(),
     ReturnFun = fun(R) -> RPid ! {result, R} end,
     ok = aae_fetchclocks(Cntrl0, [{1, 3}], [SegmentID1], ReturnFun, null),
     Result0 = start_receiver(),
     io:format("Result0 of ~w~n", [Result0]),
-    ?assertMatch([{<<"B">>,<<"K">>,[{a,1}]}], Result0),
-    
+    ?assertMatch([{<<"B">>, <<"K">>, [{a, 1}]}], Result0),
+
     % at this close the PUT has been flushed because of the fold
     ok = aae_close(Cntrl0),
 
     {ok, Cntrl1} = start_wrap(true, RootPath, leveled_so),
-    
+
     ok = aae_fetchclocks(Cntrl1, [{1, 3}], [SegmentID1], ReturnFun, null),
     Result1 = start_receiver(),
     io:format("Result1 of ~w~n", [Result1]),
-    ?assertMatch([{<<"B">>,<<"K">>,[{a,1}]}], Result1),
+    ?assertMatch([{<<"B">>, <<"K">>, [{a, 1}]}], Result1),
 
     ok = aae_put(Cntrl1, {1, 3}, <<"B">>, <<"K0">>, [{b, 1}], [], <<>>),
     BinaryKey2 = aae_util:make_binarykey(<<"B">>, <<"K0">>),
-    SegmentID2 = 
-        leveled_tictac:get_segment(leveled_tictac:keyto_segment32(BinaryKey2), 
-                                    ?TREE_SIZE),
+    SegmentID2 =
+        leveled_tictac:get_segment(
+            leveled_tictac:keyto_segment32(BinaryKey2),
+            ?TREE_SIZE
+        ),
 
     % Don't fold - so the PUT must be flushed by the close
     ok = aae_close(Cntrl1),
     {ok, Cntrl2} = start_wrap(true, RootPath, leveled_so),
 
-    ok = aae_fetchclocks(Cntrl2,[{1, 3}], [SegmentID1, SegmentID2], 
-                            ReturnFun, null),
+    ok = aae_fetchclocks(
+        Cntrl2,
+        [{1, 3}],
+        [SegmentID1, SegmentID2],
+        ReturnFun,
+        null
+    ),
     Result2 = start_receiver(),
     io:format("Result2 of ~w~n", [Result2]),
-    ExpResult2 = [{<<"B">>,<<"K">>,[{a,1}]}, {<<"B">>, <<"K0">>, [{b, 1}]}],
+    ExpResult2 = [{<<"B">>, <<"K">>, [{a, 1}]}, {<<"B">>, <<"K0">>, [{b, 1}]}],
     ?assertMatch(ExpResult2, lists:usort(Result2)),
 
     ok = aae_close(Cntrl2),
     aae_util:clean_subdir(RootPath).
-
 
 wrong_indexn_tester() ->
     RootPath = "test/emptycntrllr/",
@@ -1669,41 +1958,41 @@ wrong_indexn_tester() ->
     {ok, Cntrl0} = start_wrap(true, RootPath, leveled_so),
     NRB0 = aae_controller:aae_nextrebuild(Cntrl0),
     ?assertMatch(false, NRB0 < os:timestamp()),
-    
+
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, ZeroB0}] = start_receiver(),
+    [{{0, 3}, ZeroB0}] = start_receiver(),
     ?assertMatch(<<0:131072/integer>>, ZeroB0),
 
     ok = aae_fetchroot(Cntrl0, [{1, 3}], ReturnFun),
     [{{1, 3}, F0}] = start_receiver(),
     ?assertMatch(?EMPTY, F0),
-    
+
     io:format("Put entry - wrong index~n"),
     ok = aae_put(Cntrl0, {1, 3}, <<"B">>, <<"K">>, [{a, 1}], [], <<>>),
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, Root1}] = start_receiver(),
+    [{{0, 3}, Root1}] = start_receiver(),
     ?assertMatch(<<0:131072/integer>>, Root1),
-    
+
     ok = aae_fetchroot(Cntrl0, [{1, 3}], ReturnFun),
     [{{1, 3}, F1}] = start_receiver(),
     ?assertMatch(?EMPTY, F1),
-    
+
     io:format("Put entry - correct index same key~n"),
     ok = aae_put(Cntrl0, {0, 3}, <<"B">>, <<"K">>, [{c, 1}], [], <<>>),
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, Root2}] = start_receiver(),
+    [{{0, 3}, Root2}] = start_receiver(),
     ?assertMatch(false, <<0:131072/integer>> == Root2),
 
     ok = aae_fetchroot(Cntrl0, [{1, 3}], ReturnFun),
     [{{1, 3}, F2}] = start_receiver(),
     ?assertMatch(?EMPTY, F2),
-    
+
     BranchIDL = leveled_tictac:find_dirtysegments(Root1, Root2),
     ?assertMatch(1, length(BranchIDL)),
-    [BranchID] = BranchIDL, 
-    
+    [BranchID] = BranchIDL,
+
     ok = aae_fetchbranches(Cntrl0, [{0, 3}], BranchIDL, ReturnFun),
-    [{{0,3}, [{BranchID, Branch3}]}] = start_receiver(),
+    [{{0, 3}, [{BranchID, Branch3}]}] = start_receiver(),
     ?assertMatch(false, <<0:131072/integer>> == Branch3),
 
     SegIDL = leveled_tictac:find_dirtysegments(Branch3, <<0:8192>>),
@@ -1711,12 +2000,12 @@ wrong_indexn_tester() ->
     [SubSegID] = SegIDL,
     SegID = 256 * BranchID + SubSegID,
     {BB, KB} = {<<"B">>, <<"K">>},
-    ExpSegID = 
-        leveled_tictac:keyto_segment32(<<BB/binary, KB/binary>>)
-            band (1024 * 1024 - 1),
+    ExpSegID =
+        leveled_tictac:keyto_segment32(<<BB/binary, KB/binary>>) band
+            (1024 * 1024 - 1),
     ?assertMatch(ExpSegID, SegID),
     io:format("SegID ~w ExpSegID ~w~n", [SegID, ExpSegID]),
-    
+
     ok = aae_fetchclocks(Cntrl0, [{0, 3}], [SegID], ReturnFun, null),
     KC4 = start_receiver(),
     % Should find new key
@@ -1726,10 +2015,9 @@ wrong_indexn_tester() ->
     KC5 = start_receiver(),
     % Shouldn't find old key - has been replaced by new key
     ?assertMatch([], KC5),
-    
+
     ok = aae_close(Cntrl0),
     aae_util:clean_subdir(RootPath).
-
 
 basic_cache_rebuild_tester(StoreType) ->
     RootPath = "test/emptycntrllr/",
@@ -1751,31 +2039,36 @@ basic_cache_rebuild_tester(StoreType) ->
     _KVL = lists:sort(RKL ++ Rest1),
 
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, Root0}] = start_receiver(),
+    [{{0, 3}, Root0}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{100, 3}], ReturnFun),
-    [{{100,3}, Root1}] = start_receiver(),
+    [{{100, 3}, Root1}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{200, 3}], ReturnFun),
-    [{{200,3}, Root2}] = start_receiver(),
+    [{{200, 3}, Root2}] = start_receiver(),
 
-    ok = aae_rebuildtrees(Cntrl0, 
-                            Preflists, 
-                            null,
-                            workerfun(ReturnFun),
-                            false),
-    ok = aae_fetchclocks(Cntrl0,
-                            Preflists, lists:seq(1, 16),
-                            fun(_R) -> ok end,
-                            null),
+    ok = aae_rebuildtrees(
+        Cntrl0,
+        Preflists,
+        null,
+        workerfun(ReturnFun),
+        false
+    ),
+    ok = aae_fetchclocks(
+        Cntrl0,
+        Preflists,
+        lists:seq(1, 16),
+        fun(_R) -> ok end,
+        null
+    ),
     timer:sleep(2100),
-        % Must wait the prompt for the fetch to happen (and a touch)
+    % Must wait the prompt for the fetch to happen (and a touch)
     ok = start_receiver(),
 
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, RB_Root0}] = start_receiver(),
+    [{{0, 3}, RB_Root0}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{100, 3}], ReturnFun),
-    [{{100,3}, RB_Root1}] = start_receiver(),
+    [{{100, 3}, RB_Root1}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{200, 3}], ReturnFun),
-    [{{200,3}, RB_Root2}] = start_receiver(),
+    [{{200, 3}, RB_Root2}] = start_receiver(),
 
     SegIDL = leveled_tictac:find_dirtysegments(Root0, RB_Root0),
     io:format("Count of dirty segments in IndexN 0 ~w~n", [length(SegIDL)]),
@@ -1784,10 +2077,9 @@ basic_cache_rebuild_tester(StoreType) ->
     ?assertMatch(Root0, RB_Root0),
     ?assertMatch(Root1, RB_Root1),
     ?assertMatch(Root2, RB_Root2),
-    
+
     ok = aae_destroy(Cntrl0),
     aae_util:clean_subdir(RootPath).
-
 
 varyindexn_cache_rebuild_tester(StoreType) ->
     RootPath = "test/emptycntrllr/",
@@ -1798,18 +2090,20 @@ varyindexn_cache_rebuild_tester(StoreType) ->
 
     Preflists = [{0, 3}, {100, 3}, {200, 3}],
     {ok, Cntrl0} = start_wrap(true, RootPath, Preflists, StoreType),
-    skipped = aae_rebuildtrees(Cntrl0, 
-                                Preflists, 
-                                null,
-                                workerfun(ReturnFun),
-                                true),
+    skipped = aae_rebuildtrees(
+        Cntrl0,
+        Preflists,
+        null,
+        workerfun(ReturnFun),
+        true
+    ),
     NRB0 = aae_controller:aae_nextrebuild(Cntrl0),
     ?assertMatch(false, NRB0 < os:timestamp()),
 
     % Note now adding a preflist to the keys being loaded.
     % There housl be no tree cache for these keys, but they should be added
     % to the Key store
-    UpdPreflists = [{300, 3}|Preflists],
+    UpdPreflists = [{300, 3} | Preflists],
     PKL = put_keys(Cntrl0, UpdPreflists, [], 5000),
     {RepL, Rest0} = lists:split(1000, PKL),
     {RemL, Rest1} = lists:split(1000, Rest0),
@@ -1818,31 +2112,33 @@ varyindexn_cache_rebuild_tester(StoreType) ->
     _KVL = lists:sort(RKL ++ Rest1),
 
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, Root0}] = start_receiver(),
+    [{{0, 3}, Root0}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{100, 3}], ReturnFun),
-    [{{100,3}, Root1}] = start_receiver(),
+    [{{100, 3}, Root1}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{200, 3}], ReturnFun),
-    [{{200,3}, Root2}] = start_receiver(),
+    [{{200, 3}, Root2}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{300, 3}], ReturnFun),
-    [{{300,3}, Root3}] = start_receiver(),
+    [{{300, 3}, Root3}] = start_receiver(),
     ?assertMatch(?EMPTY, Root3),
 
-    ok = aae_rebuildtrees(Cntrl0, 
-                            UpdPreflists, 
-                            null,
-                            workerfun(ReturnFun),
-                            false),
+    ok = aae_rebuildtrees(
+        Cntrl0,
+        UpdPreflists,
+        null,
+        workerfun(ReturnFun),
+        false
+    ),
     ok = start_receiver(),
 
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, RB1_Root0}] = start_receiver(),
+    [{{0, 3}, RB1_Root0}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{100, 3}], ReturnFun),
-    [{{100,3}, RB1_Root1}] = start_receiver(),
+    [{{100, 3}, RB1_Root1}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{200, 3}], ReturnFun),
-    [{{200,3}, RB1_Root2}] = start_receiver(),
+    [{{200, 3}, RB1_Root2}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{300, 3}], ReturnFun),
-    [{{300,3}, RB1_Root3}] = start_receiver(),
-    
+    [{{300, 3}, RB1_Root3}] = start_receiver(),
+
     ?assertMatch(true, is_binary(RB1_Root3)),
 
     SegIDL = leveled_tictac:find_dirtysegments(Root0, RB1_Root0),
@@ -1853,21 +2149,23 @@ varyindexn_cache_rebuild_tester(StoreType) ->
     ?assertMatch(Root1, RB1_Root1),
     ?assertMatch(Root2, RB1_Root2),
 
-    ok = aae_rebuildtrees(Cntrl0, 
-                            Preflists, 
-                            null,
-                            workerfun(ReturnFun),
-                            false),
+    ok = aae_rebuildtrees(
+        Cntrl0,
+        Preflists,
+        null,
+        workerfun(ReturnFun),
+        false
+    ),
     ok = start_receiver(),
 
     ok = aae_fetchroot(Cntrl0, [{0, 3}], ReturnFun),
-    [{{0,3}, RB2_Root0}] = start_receiver(),
+    [{{0, 3}, RB2_Root0}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{100, 3}], ReturnFun),
-    [{{100,3}, RB2_Root1}] = start_receiver(),
+    [{{100, 3}, RB2_Root1}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{200, 3}], ReturnFun),
-    [{{200,3}, RB2_Root2}] = start_receiver(),
+    [{{200, 3}, RB2_Root2}] = start_receiver(),
     ok = aae_fetchroot(Cntrl0, [{300, 3}], ReturnFun),
-    [{{300,3}, RB2_Root3}] = start_receiver(),
+    [{{300, 3}, RB2_Root3}] = start_receiver(),
     ?assertMatch(?EMPTY, RB2_Root3),
 
     SegIDL = leveled_tictac:find_dirtysegments(Root0, RB1_Root0),
@@ -1877,7 +2175,7 @@ varyindexn_cache_rebuild_tester(StoreType) ->
     ?assertMatch(Root0, RB2_Root0),
     ?assertMatch(Root1, RB2_Root1),
     ?assertMatch(Root2, RB2_Root2),
-    
+
     ok = aae_fetchbranches(Cntrl0, [{300, 3}], [1], ReturnFun),
     [{{300, 3}, RB2_Branch3}] = start_receiver(),
     ?assertMatch([{1, ?EMPTY}], RB2_Branch3),
@@ -1885,82 +2183,111 @@ varyindexn_cache_rebuild_tester(StoreType) ->
     ok = aae_close(Cntrl0),
     aae_util:clean_subdir(RootPath).
 
-
 check_schedule_test() ->
     RootPath = "test/schedule",
     ExpectedSchedule = {2, 637},
     {ok, C} =
-        start_wrap(true, RootPath, [?TEST_DEFAULT_PARTITION], leveled_ko,
-            ExpectedSchedule),
-    S = sys:get_state(C),
-    ?assertMatch(ExpectedSchedule, S#state.rebuild_schedule),
+        start_wrap(
+            true,
+            RootPath,
+            [?TEST_DEFAULT_PARTITION],
+            leveled_ko,
+            ExpectedSchedule
+        ),
+    S =
+        case sys:get_state(C) of
+            SR when is_record(SR, state) ->
+                SR
+        end,
+    ?assert(ExpectedSchedule == S#state.rebuild_schedule),
     ok = aae_close(C),
     aae_util:clean_subdir(RootPath).
 
-
 coverage_cheat_test() ->
+    DummyPid = self(),
     {noreply, _State0} =
-        handle_info(null,
-            #state{rebuild_schedule =
-                {?TEST_MINHOURS, ?TEST_JITTERSECONDS}}),
+        handle_info(
+            null,
+            #state{
+                rebuild_schedule =
+                    {?TEST_MINHOURS, ?TEST_JITTERSECONDS},
+                key_store = DummyPid,
+                root_path = "dummy/"
+            }
+        ),
     {ok, _State1} =
-        code_change(null,
-            #state{rebuild_schedule =
-                {?TEST_MINHOURS, ?TEST_JITTERSECONDS}}, 
-        null).
-
-
+        code_change(
+            null,
+            #state{
+                rebuild_schedule =
+                    {?TEST_MINHOURS, ?TEST_JITTERSECONDS},
+                key_store = DummyPid,
+                root_path = "dummy/"
+            },
+            null
+        ).
 
 %%%============================================================================
 %%% Test Utils
 %%%============================================================================
 
-
 start_wrap(IsEmpty, RootPath, StoreType) ->
     start_wrap(IsEmpty, RootPath, [?TEST_DEFAULT_PARTITION], StoreType).
 
 start_wrap(IsEmpty, RootPath, RPL, StoreType) ->
-    start_wrap(IsEmpty, RootPath, RPL, StoreType,
-        {?TEST_MINHOURS, ?TEST_JITTERSECONDS}).
+    start_wrap(
+        IsEmpty,
+        RootPath,
+        RPL,
+        StoreType,
+        {?TEST_MINHOURS, ?TEST_JITTERSECONDS}
+    ).
 
 start_wrap(IsEmpty, RootPath, RPL, StoreType, RebuildSchedule) ->
     F = fun(_X) -> {0, 1, 0, null} end,
-    aae_start({parallel, StoreType}, 
-                IsEmpty, 
-                RebuildSchedule, 
-                RPL, RootPath, F).
-
+    aae_start(
+        {parallel, StoreType},
+        IsEmpty,
+        RebuildSchedule,
+        RPL,
+        RootPath,
+        F
+    ).
 
 put_keys(Cntrl, _Preflists, KeyList, 0) ->
     ok = aae_ping(Cntrl, os:timestamp(), {sync, 10000}),
     KeyList;
 put_keys(Cntrl, Preflists, KeyList, Count) ->
     Preflist = lists:nth(rand:uniform(length(Preflists)), Preflists),
-    Bucket = integer_to_binary(Count rem 5),  
+    Bucket = integer_to_binary(Count rem 5),
     Key = list_to_binary(string:right(integer_to_list(Count), 6, $0)),
     VersionVector = add_randomincrement([]),
-    ok = aae_put(Cntrl, 
-                    Preflist, 
-                    Bucket, 
-                    Key, 
-                    VersionVector, 
-                    none, 
-                    <<>>),
-    put_keys(Cntrl, 
-                Preflists, 
-                [{Bucket, Key, VersionVector, Preflist}|KeyList], 
-                Count - 1).
-    
+    ok = aae_put(
+        Cntrl,
+        Preflist,
+        Bucket,
+        Key,
+        VersionVector,
+        none,
+        <<>>
+    ),
+    put_keys(
+        Cntrl,
+        Preflists,
+        [{Bucket, Key, VersionVector, Preflist} | KeyList],
+        Count - 1
+    ).
+
 replace_keys(_Cntrl, [], OutList) ->
     OutList;
-replace_keys(Cntrl, [{B, K, C, PL}|Rest], OutList) ->
+replace_keys(Cntrl, [{B, K, C, PL} | Rest], OutList) ->
     NewC = add_randomincrement(C),
     ok = aae_put(Cntrl, PL, B, K, NewC, C, <<>>),
-    replace_keys(Cntrl, Rest, [{B, K, NewC, PL}|OutList]).
+    replace_keys(Cntrl, Rest, [{B, K, NewC, PL} | OutList]).
 
 remove_keys(_Cntrl, []) ->
     ok;
-remove_keys(Cntrl, [{B, K, C, PL}|Rest]) ->
+remove_keys(Cntrl, [{B, K, C, PL} | Rest]) ->
     ok = aae_put(Cntrl, PL, B, K, none, C, <<>>),
     remove_keys(Cntrl, Rest).
 
@@ -1968,18 +2295,25 @@ add_randomincrement(Clock) ->
     RandIncr = rand:uniform(100),
     RandNode =
         lists:nth(
-            rand:uniform(9), 
+            rand:uniform(9),
             [
-                <<"a">>, <<"b">>, <<"c">>, <<"d">>, <<"e">>,
-                <<"f">>, <<"g">>, <<"h">>, <<"i">>
+                <<"a">>,
+                <<"b">>,
+                <<"c">>,
+                <<"d">>,
+                <<"e">>,
+                <<"f">>,
+                <<"g">>,
+                <<"h">>,
+                <<"i">>
             ]
         ),
-    UpdClock = 
-        case lists:keytake(RandNode, 1, Clock) of 
+    UpdClock =
+        case lists:keytake(RandNode, 1, Clock) of
             false ->
-                [{RandNode, RandIncr}|Clock];
+                [{RandNode, RandIncr} | Clock];
             {value, {RandNode, Incr0}, Rest} ->
-                [{RandNode, Incr0 + RandIncr}|Rest]
+                [{RandNode, Incr0 + RandIncr} | Rest]
         end,
     lists:usort(UpdClock).
 
@@ -1987,13 +2321,13 @@ workerfun(ReturnFun) ->
     WorkerPid = spawn(?MODULE, rebuild_worker, [ReturnFun]),
     fun(FoldFun, FinishFun) ->
         aae_util:log(aae07, []),
-        WorkerPid! {fold, FoldFun, FinishFun}
+        WorkerPid ! {fold, FoldFun, FinishFun}
     end.
 
 start_receiver() ->
     receive
         {result, Reply} ->
-            Reply 
+            Reply
     end.
 
 rebuild_worker(ReturnFun) ->
@@ -2011,13 +2345,12 @@ returnfun_test() ->
     ok = ReturnFun({error, queue_backlog}).
 
 wrap_splitfun_test() ->
-    SplitObjFun = 
+    SplitObjFun =
         fun(_Obj) -> {1000, 2, 0, term_to_binary(null)} end,
     WrappedFun = wrapped_splitobjfun(SplitObjFun),
     SplitObj = WrappedFun(<<"bin">>),
     ?assert(is_tuple(SplitObj)),
     ?assertMatch(5, tuple_size(SplitObj)),
-    ?assertMatch(undefined, element(4, SplitObj)). 
+    ?assertMatch(undefined, element(4, SplitObj)).
 
 -endif.
-

@@ -5,24 +5,29 @@
 -module(aae_runner).
 
 -behaviour(gen_server).
--include("include/aae.hrl").
 
--export([init/1,
-            handle_call/3,
-            handle_cast/2,
-            handle_info/2,
-            terminate/2,
-            code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
--export([runner_start/1,
-            runner_work/2,
-            runner_stop/1]).
+-export([
+    runner_start/1,
+    runner_work/2,
+    runner_stop/1
+]).
 
--record(state, {result_size = 0 :: integer(),
-                query_count = 0 :: integer(),
-                query_time  = 0 :: integer(),
-                aae_controller :: pid()|undefined,
-                log_levels :: aae_util:log_levels()}).
+-record(state, {
+    result_size = 0 :: integer(),
+    query_count = 0 :: integer(),
+    query_time = 0 :: integer(),
+    aae_controller :: pid() | undefined,
+    log_levels :: aae_util:log_levels()
+}).
 
 -define(LOG_FREQUENCY, 10).
 
@@ -32,14 +37,14 @@
 %%% API
 %%%============================================================================
 
-
 -spec runner_start(aae_util:log_levels()) -> {ok, pid()}.
 %% @doc
-%% Start an AAE runner to manage folds 
+%% Start an AAE runner to manage folds
 runner_start(LogLevels) ->
-    gen_server:start_link(?MODULE, [LogLevels, self()], []).
+    {ok, Pid} = gen_server:start_link(?MODULE, [LogLevels, self()], []),
+    {ok, Pid}.
 
--spec runner_work(pid(), aae_controller:runner_work()|queue_empty) -> ok.
+-spec runner_work(pid(), aae_controller:runner_work() | queue_empty) -> ok.
 %% @doc
 %% Be cast some work
 runner_work(Runner, Work) ->
@@ -56,8 +61,7 @@ runner_stop(Runner) ->
 %%%============================================================================
 
 init([LogLevels, Controller]) ->
-    {ok,
-        #state{log_levels = LogLevels, aae_controller = Controller},
+    {ok, #state{log_levels = LogLevels, aae_controller = Controller},
         ?PROMPT_MILLISECONDS}.
 
 handle_call(close, _From, State) ->
@@ -80,14 +84,21 @@ handle_cast({work, Folder, ReturnFun, SizeFun}, State) ->
                 QT0 = State#state.query_time + QueryTime,
                 QC0 = State#state.query_count + 1,
                 {RS1, QT1, QC1} =
-                    maybe_log(RS0, QT0, QC0,
-                                ?LOG_FREQUENCY, State#state.log_levels),
+                    maybe_log(
+                        RS0,
+                        QT0,
+                        QC0,
+                        ?LOG_FREQUENCY,
+                        State#state.log_levels
+                    ),
 
                 ReturnFun(Results),
 
-                State#state{result_size = RS1,
-                            query_time = QT1,
-                            query_count = QC1}
+                State#state{
+                    result_size = RS1,
+                    query_time = QT1,
+                    query_count = QC1
+                }
         catch
             Error:Pattern ->
                 aae_util:log(r0005, [Error, Pattern], State#state.log_levels),
@@ -96,17 +107,19 @@ handle_cast({work, Folder, ReturnFun, SizeFun}, State) ->
         end,
     {noreply, State0, 0}.
 
-handle_info(timeout, State) ->
+handle_info(timeout, State = #state{aae_controller = C}) when C =/= undefined ->
     aae_util:log(r0004, [], State#state.log_levels),
-    ok = aae_controller:aae_runnerprompt(State#state.aae_controller),
+    ok = aae_controller:aae_runnerprompt(C),
     {noreply, State}.
 
 terminate(_Reason, State) ->
-    _ = maybe_log(State#state.result_size, 
-                    State#state.query_time, 
-                    State#state.query_count, 
-                    1,
-                    State#state.log_levels),
+    _ = maybe_log(
+        State#state.result_size,
+        State#state.query_time,
+        State#state.query_count,
+        1,
+        State#state.log_levels
+    ),
     ok.
 
 code_change(_OldVsn, State, _Extra) ->
@@ -129,6 +142,7 @@ maybe_log(RS_Acc, QT_Acc, QC_Acc, _LogFreq, LogLs) ->
 -ifdef(TEST).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("kv_index_tictactree/include/aae.hrl").
 
 runner_fail_test() ->
     {ok, R} = runner_start(undefined),
@@ -144,17 +158,14 @@ runner_fail_test() ->
     runner_work(R, {work, FoldFun, ReturnFun, SizeFun}),
     error = start_receiver(),
     ok = runner_stop(R).
-    
+
 start_receiver() ->
     receive
         error ->
-            error 
+            error
     end.
-
 
 coverage_cheat_test() ->
     {ok, _State1} = code_change(null, #state{}, null).
 
 -endif.
-
-
