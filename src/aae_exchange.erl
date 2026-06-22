@@ -195,7 +195,9 @@
     scan_timeout = ?SCAN_TIMEOUT_MS :: non_neg_integer(),
     max_results = ?MAX_RESULTS :: pos_integer(),
     purpose :: atom() | undefined,
-    key_filter = none :: aae_controller:key_include_fun()
+    key_filter = none :: aae_controller:key_include_fun(),
+    worthwhile_reduction = ?WORTHWHILE_REDUCTION :: float(),
+    worthwhile_reduction_cached = ?WORTHWHILE_REDUCTION_CACHED :: non_neg_integer()
 }).
 
 -type branch_results() :: list({integer(), binary()}).
@@ -229,7 +231,10 @@
     | {log_levels, aae_util:log_levels()}
     | {max_results, non_neg_integer()}
     | {purpose, atom()}
-    | {key_filter, aae_controller:key_include_fun()}.
+    | {key_filter, aae_controller:key_include_fun()}
+    % 0.0 <= WR =< 1.0
+    | {worthwhile_reduction, float()}
+    | {worthwhile_reduction_cached, non_neg_integer()}.
 -type options() :: list(option_item()).
 -type send_message() ::
     fetch_root
@@ -398,8 +403,8 @@ tree_compare(timeout, State = #state{exchange_filters = Filters}) when
     % can be applied to accelerate the process.
     TreeSize = element(?FILTERIDX_TRS, Filters),
     case
-        ((length(StillDirtyLeaves) > 0) and
-            (Reduction > ?WORTHWHILE_REDUCTION))
+        ((length(StillDirtyLeaves) > 0) andalso
+            (Reduction > State#state.worthwhile_reduction))
     of
         true ->
             % Keep comparing trees, this is reducing the segments we will
@@ -465,7 +470,7 @@ root_compare(timeout, State) ->
     {BranchIDs, Reduction} =
         case State#state.last_root_compare of
             none ->
-                {DirtyBranches, DirtyBranches};
+                {DirtyBranches, length(DirtyBranches)};
             PreviouslyDirtyBranches ->
                 BDL = intersect_ids(PreviouslyDirtyBranches, DirtyBranches),
                 {BDL, length(BDL) - length(PreviouslyDirtyBranches)}
@@ -474,8 +479,8 @@ root_compare(timeout, State) ->
     % reducing the result set sufficiently, keep doing it until we switch to
     % branch_compare
     case
-        ((length(BranchIDs) > 0) and
-            (Reduction > ?WORTHWHILE_REDUCTION_CACHED))
+        ((length(BranchIDs) > 0) andalso
+            (Reduction > State#state.worthwhile_reduction_cached))
     of
         true ->
             trigger_next(
@@ -522,7 +527,7 @@ branch_compare(timeout, State) ->
     {SegmentIDs, Reduction} =
         case State#state.last_branch_compare of
             none ->
-                {DirtySegments, DirtySegments};
+                {DirtySegments, length(DirtySegments)};
             PreviouslyDirtySegments ->
                 SDL = intersect_ids(PreviouslyDirtySegments, DirtySegments),
                 {SDL, length(SDL) - length(PreviouslyDirtySegments)}
@@ -531,8 +536,8 @@ branch_compare(timeout, State) ->
     % reducing the result set sufficiently, keep doing it until we switch to
     % branch_compare
     case
-        ((length(SegmentIDs) > 0) and
-            (Reduction > ?WORTHWHILE_REDUCTION_CACHED))
+        ((length(SegmentIDs) > 0) andalso
+            (Reduction > State#state.worthwhile_reduction_cached))
     of
         true ->
             trigger_next(
@@ -858,7 +863,15 @@ process_options([{purpose, Purpose} | Tail], State) when
 process_options([{key_filter, KIF} | Tail], State) when
     is_function(KIF, 1)
 ->
-    process_options(Tail, State#state{key_filter = KIF}).
+    process_options(Tail, State#state{key_filter = KIF});
+process_options([{worthwhile_reduction, WR} | Tail], State) when
+    is_float(WR), WR >= 0.0, WR =< 1.0
+->
+    process_options(Tail, State#state{worthwhile_reduction = WR});
+process_options([{worthwhile_reduction_cached, WR} | Tail], State) when
+    is_integer(WR), WR >= 0
+->
+    process_options(Tail, State#state{worthwhile_reduction_cached = WR}).
 
 -spec trigger_next(
     any(),
@@ -1350,6 +1363,143 @@ clean_exit_ontimeout_test() ->
     },
     State1 = State0#state{pending_state = timeout},
     {stop, normal, State1} = waiting_all_results(timeout, State0).
+
+avoid_multiple_merge_test() ->
+    EmptyP = leveled_tictac:new_tree(pink, xxsmall),
+    EmptyB = leveled_tictac:new_tree(blue, xxsmall),
+    PT = leveled_tictac:alter_segment(1, 1, EmptyP),
+    BT = leveled_tictac:alter_segment(1, 2, EmptyB),
+    Tester = self(),
+
+    SendFun =
+        fun
+            ({merge_tree_range, _, _, _, _, _, _}, _PLs, pink) ->
+                Exchange = self(),
+                Tester ! {merge_tree_range, pink},
+                reply(Exchange, PT, pink);
+            ({merge_tree_range, _, _, _, _, _, _}, _PLs, blue) ->
+                Exchange = self(),
+                Tester ! {merge_tree_range, blue},
+                reply(Exchange, BT, blue);
+            ({fetch_clocks_range, _, _, _, _}, _PLs, Colour) ->
+                Exchange = self(),
+                Tester ! {fetch_clocks, Colour},
+                reply(Exchange, [], Colour)
+        end,
+    BlueL = [{SendFun, [{0, 1}]}],
+    PinkL = [{SendFun, [{0, 1}]}],
+    RepairFun = fun(_RL) -> ok end,
+    ReplyFun = fun(R) -> Tester ! {finish, R} end,
+    Filters = {filter, all, all, xxsmall, all, all, pre_hash},
+    Opts = [{transition_pause_ms, 10}],
+
+    start(partial, BlueL, PinkL, RepairFun, ReplyFun, Filters, Opts),
+    Msgs = receive_loop([]),
+    ?assertMatch(7, length(Msgs)),
+    ?assertMatch({clock_compare, 0}, hd(Msgs)),
+
+    % Set worthwhile reduction to 1.0, and there will be only one cycle of
+    % merge_tree_range
+    WR = {worthwhile_reduction, 1.0},
+    start(partial, BlueL, PinkL, RepairFun, ReplyFun, Filters, [WR | Opts]),
+    Msgs2 = receive_loop([]),
+    ?assertMatch(5, length(Msgs2)),
+    ?assertMatch({clock_compare, 0}, hd(Msgs2)).
+
+avoid_multiple_root_test() ->
+    PR = <<1:256/integer>>,
+    PB = [{1, <<1:256/integer>>}],
+    BR = <<0:256/integer>>,
+    BB = [{1, <<0:256/integer>>}],
+    Tester = self(),
+
+    SendFun =
+        fun
+            (fetch_root, _PLs, pink) ->
+                Exchange = self(),
+                Tester ! {fetch_root, pink},
+                reply(Exchange, PR, pink);
+            (fetch_root, _PLs, blue) ->
+                Exchange = self(),
+                Tester ! {fetch_root, blue},
+                reply(Exchange, BR, blue);
+            ({fetch_branches, _}, _PLs, pink) ->
+                Exchange = self(),
+                Tester ! {fetch_branches, pink},
+                reply(Exchange, PB, pink);
+            ({fetch_branches, _}, _PLs, blue) ->
+                Exchange = self(),
+                Tester ! {fetch_branches, blue},
+                reply(Exchange, BB, blue);
+            ({fetch_clocks, _}, _PLs, Colour) ->
+                Exchange = self(),
+                Tester ! {fetch_clocks, Colour},
+                reply(Exchange, [], Colour)
+        end,
+    BlueList = [{SendFun, [{0, 1}]}],
+    PinkList = [{SendFun, [{0, 1}]}],
+    RepairFun = fun(_RL) -> ok end,
+    ReplyFun = fun(R) -> Tester ! {finish, R} end,
+    Opts = [{transition_pause_ms, 10}],
+
+    start(full, BlueList, PinkList, RepairFun, ReplyFun, none, Opts),
+    Msgs = receive_loop([]),
+    ?assertMatch(11, length(Msgs)),
+    ?assertMatch({clock_compare, 0}, hd(Msgs)),
+
+    % Set worthwhile reduction to 10, and there will be only one cycle of
+    % fetch_root, and one of fetch_branches
+    WR = {worthwhile_reduction_cached, 10},
+    start(full, BlueList, PinkList, RepairFun, ReplyFun, none, [WR | Opts]),
+    Msgs2 = receive_loop([]),
+    ?assertMatch(7, length(Msgs2)),
+    ?assertMatch({clock_compare, 0}, hd(Msgs2)).
+
+transition_root_to_branch_compare_test() ->
+    % It is possible to match branches when roots mismatch, prove that this
+    % returns {branch_compare, 0 as expected}
+    PR = <<1:256/integer>>,
+    PB = [{1, <<1:256/integer>>}],
+    BR = <<0:256/integer>>,
+    BB = [{1, <<1:256/integer>>}],
+    Tester = self(),
+
+    SendFun =
+        fun
+            (fetch_root, _PLs, pink) ->
+                Exchange = self(),
+                Tester ! {fetch_root, pink},
+                reply(Exchange, PR, pink);
+            (fetch_root, _PLs, blue) ->
+                Exchange = self(),
+                Tester ! {fetch_root, blue},
+                reply(Exchange, BR, blue);
+            ({fetch_branches, _}, _PLs, pink) ->
+                Exchange = self(),
+                Tester ! {fetch_branches, pink},
+                reply(Exchange, PB, pink);
+            ({fetch_branches, _}, _PLs, blue) ->
+                Exchange = self(),
+                Tester ! {fetch_branches, blue},
+                reply(Exchange, BB, blue)
+        end,
+    BlueList = [{SendFun, [{0, 1}]}],
+    PinkList = [{SendFun, [{0, 1}]}],
+    RepairFun = fun(_RL) -> ok end,
+    ReplyFun = fun(R) -> Tester ! {finish, R} end,
+    Opts = [{transition_pause_ms, 10}],
+
+    start(full, BlueList, PinkList, RepairFun, ReplyFun, none, Opts),
+    Msgs = receive_loop([]),
+    ?assertMatch({branch_compare, 0}, hd(Msgs)).
+
+receive_loop(Acc) ->
+    receive
+        {finish, Msg} ->
+            [Msg | Acc];
+        Msg ->
+            receive_loop([Msg | Acc])
+    end.
 
 connect_error_test() ->
     SendFun =
