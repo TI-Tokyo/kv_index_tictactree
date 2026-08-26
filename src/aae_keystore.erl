@@ -14,38 +14,24 @@
 
 -module(aae_keystore).
 
--behaviour(gen_fsm).
-
--compile(
-    {nowarn_deprecated_function, [
-        {gen_fsm, start_link, 3},
-        {gen_fsm, send_event, 2},
-        {gen_fsm, sync_send_event, 2},
-        {gen_fsm, sync_send_event, 3},
-        {gen_fsm, sync_send_all_state_event, 2},
-        {gen_fsm, sync_send_all_state_event, 3},
-        {gen_fsm, send_all_state_event, 2}
-    ]}
-).
+-behaviour(gen_statem).
 
 -include("aae.hrl").
 
 -export([
     init/1,
-    handle_sync_event/4,
-    handle_event/3,
-    handle_info/3,
+    handle_event/4,
     terminate/3,
     code_change/4
 ]).
 
 -export([
-    loading/2,
     loading/3,
-    parallel/2,
+    loading/4,
     parallel/3,
-    native/2,
-    native/3
+    parallel/4,
+    native/3,
+    native/4
 ]).
 
 -export(
@@ -76,6 +62,9 @@
     generate_treesegment/1,
     value/3
 ]).
+
+callback_mode() ->
+    state_functions.
 
 -record(state, {
     store :: pid() | undefined,
@@ -356,7 +345,7 @@ store_parallelstart(Path, leveled_so, LogLevels, LeveledOpts) ->
             {backend_opts, LeveledOpts},
             {log_levels, LogLevels}
         ],
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [Opts], []),
     store_startupdata(Pid);
 store_parallelstart(Path, leveled_ko, LogLevels, LeveledOpts) ->
     Opts =
@@ -366,7 +355,7 @@ store_parallelstart(Path, leveled_ko, LogLevels, LeveledOpts) ->
             {backend_opts, LeveledOpts},
             {log_levels, LogLevels}
         ],
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [Opts], []),
     store_startupdata(Pid).
 
 -spec store_nativestart(
@@ -383,7 +372,7 @@ store_nativestart(Path, NativeStoreType, BackendPid, LogLevels) ->
             {native, {true, NativeStoreType, BackendPid}},
             {log_levels, LogLevels}
         ],
-    {ok, Pid} = gen_fsm:start_link(?MODULE, [Opts], []),
+    {ok, Pid} = gen_statem:start_link(?MODULE, [Opts], []),
     store_startupdata(Pid).
 
 -spec store_startupdata(pid()) ->
@@ -392,7 +381,7 @@ store_nativestart(Path, NativeStoreType, BackendPid, LogLevels) ->
 %% Get the startup metadata from the store
 store_startupdata(Pid) ->
     {LastRebuild, IsEmpty} =
-        gen_fsm:sync_send_event(Pid, startup_metadata, infinity),
+        gen_statem:call(Pid, startup_metadata, infinity),
     {ok, {LastRebuild, IsEmpty}, Pid}.
 
 -spec store_close(pid()) -> ok.
@@ -405,13 +394,13 @@ store_startupdata(Pid) ->
 %%
 %% Startup should always delete the Shutdown GUID in both stores.
 store_close(Pid) ->
-    gen_fsm:sync_send_event(Pid, close, ?SYNC_TIMEOUT).
+    gen_statem:call(Pid, close, ?SYNC_TIMEOUT).
 
 -spec store_destroy(pid()) -> ok.
 %% @doc
 %% Close the store and clear the data if parallel
 store_destroy(Pid) ->
-    gen_fsm:sync_send_event(Pid, destroy, infinity).
+    gen_statem:call(Pid, destroy, infinity).
 
 -spec store_mput(pid(), list(), boolean()) -> ok.
 %% @doc
@@ -425,17 +414,17 @@ store_destroy(Pid) ->
 %% calling process to wait some time for the queue to be empty
 store_mput(Pid, ObjectSpecs, true) ->
     aae_controller:wait_on_sync(
-        gen_fsm,
-        sync_send_all_state_event,
+        gen_statem,
+        call,
         Pid,
         ping,
         min(20 * ?LOAD_PAUSE, ?SYNC_TIMEOUT)
     ),
-    gen_fsm:send_event(Pid, {mput, ObjectSpecs});
+    gen_statem:cast(Pid, {mput, ObjectSpecs});
 store_mput(Pid, ObjectSpecs, false) ->
     % As the calling process is not waiting hold the keystore up if the backend
     % is behind
-    gen_fsm:send_event(Pid, {mput, ObjectSpecs}).
+    gen_statem:cast(Pid, {mput, ObjectSpecs}).
 
 -spec store_mload(pid(), list(objectspec())) -> ok.
 %% @doc
@@ -449,7 +438,7 @@ store_mput(Pid, ObjectSpecs, false) ->
 %% Load requests are only expected whilst loading, and are pushed to the store
 %% while put requests are cached
 store_mload(Pid, ObjectSpecs) ->
-    gen_fsm:sync_send_event(Pid, {mload, ObjectSpecs}, infinity).
+    gen_statem:call(Pid, {mload, ObjectSpecs}, infinity).
 
 -spec store_prompt(pid(), rebuild_prompts()) -> ok.
 %% @doc
@@ -462,20 +451,27 @@ store_mload(Pid, ObjectSpecs) ->
 %% Once the prompt has been processed - the prompt will be forwarded by
 %% calling NotifyFun(Prompt) -> ok.
 store_prompt(Pid, Prompt) ->
-    gen_fsm:send_event(Pid, {prompt, Prompt}).
+    gen_statem:cast(Pid, {prompt, Prompt}).
 
 -spec store_currentstatus(pid()) -> {atom(), list()} | timeout.
 %% @doc
 %% Get the state and the current GUID
 store_currentstatus(Pid) ->
     % eqwalizer:ignore ... wait_on_sync will mask the type checking
-    aae_controller:wait_on_sync(
-        gen_fsm,
-        sync_send_all_state_event,
+    {status, Pid, _Mod, Misc} = sys:get_status(Pid),
+    StateName = extract_statename(Misc),
+    GUID = aae_controller:wait_on_sync(
+        gen_statem,
+        call,
         Pid,
         current_status,
         ?SYNC_TIMEOUT
-    ).
+    ),
+    {StateName, GUID}.
+
+extract_statename(Misc) ->
+    ?LOG_NOTICE("Misc: ~p", [Misc]),
+    extracted_statename.
 
 -spec store_fold(
     pid(),
@@ -500,11 +496,10 @@ store_fold(
     InitAcc,
     Elements
 ) ->
-    gen_fsm:sync_send_event(
+    gen_statem:call(
         Pid,
         {fold, RLimiter, SLimiter, LMDLimiter, MaxObjectCount, FoldObjectsFun,
-            InitAcc, Elements},
-        infinity
+            InitAcc, Elements}, infinity
     ).
 
 -spec store_fetchclock(
@@ -513,19 +508,19 @@ store_fold(
 %% @doc
 %% Return the clock of a given Bucket and Key
 store_fetchclock(Pid, Bucket, Key) ->
-    gen_fsm:sync_send_event(Pid, {fetch_clock, Bucket, Key}, infinity).
+    gen_statem:call(Pid, {fetch_clock, Bucket, Key}, infinity).
 
 -spec store_bucketlist(pid()) -> fun(() -> list(bucket())).
 %% @doc
 %% List all the buckets in the keystore
 store_bucketlist(Pid) ->
-    gen_fsm:sync_send_all_state_event(Pid, bucket_list, infinity).
+    gen_statem:call(Pid, bucket_list, infinity).
 
 -spec store_loglevel(pid(), aae_util:log_levels()) -> ok.
 %% @doc
 %% Alter the log level at runtime
 store_loglevel(Pid, LogLevels) ->
-    gen_fsm:send_all_state_event(Pid, {log_level, LogLevels}).
+    gen_statem:cast(Pid, {log_level, LogLevels}).
 
 %%%============================================================================
 %%% gen_fsm callbacks
@@ -591,8 +586,8 @@ init([Opts]) ->
     end.
 
 loading(
+    {call, From},
     {mload, ObjectSpecs},
-    _From,
     State = #state{
         store_type = StoreType, load_store = LoadStore
     }
@@ -608,10 +603,11 @@ loading(
         false ->
             ok
     end,
-    {reply, ok, loading, State#state{load_counter = LoadCount1}};
+    {keep_state, State#state{load_counter = LoadCount1},
+     [{reply, From, ok}]};
 loading(
+    {call, From},
     {fold, Range, Segments, LMD, Count, FoldFun, InitAcc, Elements},
-    _From,
     State = #state{
         store_type = StoreType, store = Store
     }
@@ -627,19 +623,19 @@ loading(
         InitAcc,
         Elements
     ),
-    {reply, Result, loading, State};
+    {keep_state_and_data, [{reply, From, Result}]};
 loading(
+    {call, From},
     {fetch_clock, Bucket, Key},
-    _From,
     State = #state{
         store_type = StoreType, store = Store
     }
 ) when ?IS_PARALLEL(StoreType), is_pid(Store) ->
     VV = do_fetchclock(StoreType, Store, Bucket, Key),
-    {reply, VV, loading, State};
+    {keep_state_and_data, [{reply, From, VV}]};
 loading(
+    {call, From},
     Shutdown,
-    _From,
     State = #state{
         store_type = StoreType, load_store = LoadStore, store = Store
     }
@@ -651,64 +647,12 @@ loading(
 ->
     ok = delete_store(StoreType, LoadStore),
     ok = close_store(StoreType, Store, Shutdown),
-    {stop, normal, ok, State}.
+    {stop_and_reply, normal, [{reply, From, ok}], State};
 
-parallel(
-    {fold, Range, Segments, LMD, Count, FoldFun, InitAcc, Elements},
-    _From,
-    State = #state{store_type = StoreType}
-) when ?IS_PARALLEL(StoreType) ->
-    Result = do_fold(
-        StoreType,
-        State#state.store,
-        Range,
-        Segments,
-        LMD,
-        Count,
-        FoldFun,
-        InitAcc,
-        Elements
-    ),
-    {reply, Result, parallel, State};
-parallel(
-    {fetch_clock, Bucket, Key}, _From, State = #state{store_type = StoreType}
-) when ?IS_PARALLEL(StoreType) ->
-    VV = do_fetchclock(StoreType, State#state.store, Bucket, Key),
-    {reply, VV, parallel, State};
-parallel(startup_metadata, _From, State = #state{store_type = StoreType}) when
-    ?IS_PARALLEL(StoreType)
-->
-    IsEmpty = is_empty(StoreType, State#state.store),
-    {reply, {State#state.last_rebuild, IsEmpty}, parallel, State};
-parallel(Shutdown, _From, State = #state{store_type = StoreType}) when
-    ?IS_PARALLEL(StoreType), Shutdown == close orelse Shutdown == destroy
-->
-    ok = close_store(StoreType, State#state.store, Shutdown),
-    {stop, normal, ok, State}.
+loading({call, From}, current_status, State) ->
+    {keep_state_and_data, [{reply, From, {loading, State#state.current_guid}}]};
 
-native(
-    {fold, Range, SegFilter, LMD, Count, FoldFun, InitAcc, Elements},
-    _From,
-    State = #state{store_type = StoreType}
-) when ?IS_NATIVE(StoreType) ->
-    Result = do_fold(
-        StoreType,
-        State#state.store,
-        Range,
-        SegFilter,
-        LMD,
-        Count,
-        FoldFun,
-        InitAcc,
-        Elements
-    ),
-    {reply, Result, native, State};
-native(startup_metadata, _From, State) ->
-    {reply, {State#state.last_rebuild, false}, native, State};
-native(Shutdown, _From, State) when Shutdown == close; Shutdown == destroy ->
-    {stop, normal, ok, State}.
-
-loading({mput, ObjectSpecs}, State = #state{store_type = StoreType}) when
+loading(cast, {mput, ObjectSpecs}, State = #state{store_type = StoreType}) when
     ?IS_PARALLEL(StoreType)
 ->
     ok = do_load(StoreType, State#state.store, ObjectSpecs),
@@ -727,16 +671,21 @@ loading({mput, ObjectSpecs}, State = #state{store_type = StoreType}) when
             ok
     end,
     {next_state, loading, State#state{change_queue_counter = ObjectCount1}};
+
 loading(
+    cast,
     {prompt, rebuild_complete},
     State = #state{change_queue_counter = CQC, load_counter = LC})
 ->
     ?STD_LOG(ks008, [CQC, LC]),
     store_prompt(self(), queue_complete),
-    {next_state, loading, State#state{
+    {keep_state, State#state{
         load_counter = 0, load_continuation = start
     }};
-loading({prompt, queue_complete}, State = #state{store_type = StoreType}) when
+
+loading(
+    cast,
+    {prompt, queue_complete}, State = #state{store_type = StoreType}) when
     ?IS_PARALLEL(StoreType)
 ->
     GetChunk =
@@ -770,24 +719,68 @@ loading({prompt, queue_complete}, State = #state{store_type = StoreType}) when
                 change_queue_counter = 0
             }};
         {Continuation, ObjectSpecs} when is_list(ObjectSpecs) ->
-            gen_fsm:send_event(self(), {qload, lists:reverse(ObjectSpecs)}),
+            gen_statem:cast(self(), {qload, lists:reverse(ObjectSpecs)}),
             store_prompt(self(), queue_complete),
-            {next_state, loading, State#state{load_continuation = Continuation}}
+            {keep_state, State#state{load_continuation = Continuation}}
     end;
-loading({qload, ObjectSpecs}, State = #state{store_type = StoreType}) when
+
+loading(cast, {qload, ObjectSpecs}, State = #state{store_type = StoreType}) when
     ?IS_PARALLEL(StoreType)
 ->
     do_load(StoreType, State#state.load_store, ObjectSpecs),
-    {next_state, loading, State}.
+    keep_state_and_data.
+
 
 parallel(
-    {mput, ObjectSpecs}, State = #state{store_type = StoreType, store = Store}
+    {call, From},
+    {fold, Range, Segments, LMD, Count, FoldFun, InitAcc, Elements},
+    State = #state{store_type = StoreType}
+) when ?IS_PARALLEL(StoreType) ->
+    Result = do_fold(
+        StoreType,
+        State#state.store,
+        Range,
+        Segments,
+        LMD,
+        Count,
+        FoldFun,
+        InitAcc,
+        Elements
+    ),
+    {keep_state_and_data, [{reply, From, Result}]};
+parallel(
+    {call, From},
+    {fetch_clock, Bucket, Key},
+    State = #state{store_type = StoreType}
+) when ?IS_PARALLEL(StoreType) ->
+    VV = do_fetchclock(StoreType, State#state.store, Bucket, Key),
+    {keep_state_and_data, [{reply, From, VV}]};
+parallel(
+    {call, From},
+    startup_metadata, State = #state{store_type = StoreType}) when
+    ?IS_PARALLEL(StoreType)
+->
+    IsEmpty = is_empty(StoreType, State#state.store),
+    {keep_state_and_data, [{reply, From, {State#state.last_rebuild, IsEmpty}}]};
+parallel(
+    {call, From},
+    Shutdown, State = #state{store_type = StoreType}) when
+    ?IS_PARALLEL(StoreType), Shutdown == close orelse Shutdown == destroy
+->
+    ok = close_store(StoreType, State#state.store, Shutdown),
+    {stop_and_reply, normal, [{reply, From, ok}], State};
+
+parallel({call, From}, current_status, State) ->
+    {keep_state_and_data, [{reply, From, {parallel, State#state.current_guid}}]};
+
+parallel(
+    cast, {mput, ObjectSpecs}, State = #state{store_type = StoreType, store = Store}
 ) when ?IS_PARALLEL(StoreType), is_pid(Store) ->
     ok = do_load(StoreType, Store, ObjectSpecs),
     TrimCount = State#state.trim_count + 1,
     ok = maybe_trim(StoreType, TrimCount, Store),
     {next_state, parallel, State#state{trim_count = TrimCount}};
-parallel({prompt, rebuild_start}, State = #state{root_path = RP}) when
+parallel(cast, {prompt, rebuild_start}, State = #state{root_path = RP}) when
     RP =/= undefined
 ->
     GUID = leveled_util:generate_uuid(),
@@ -817,11 +810,39 @@ parallel({prompt, rebuild_start}, State = #state{root_path = RP}) when
         load_disklog = LoadLog
     }}.
 
-native({prompt, rebuild_start}, State) ->
+
+native(
+    {call, From},
+    {fold, Range, SegFilter, LMD, Count, FoldFun, InitAcc, Elements},
+    State = #state{store_type = StoreType}
+) when ?IS_NATIVE(StoreType) ->
+    Result = do_fold(
+        StoreType,
+        State#state.store,
+        Range,
+        SegFilter,
+        LMD,
+        Count,
+        FoldFun,
+        InitAcc,
+        Elements
+    ),
+    {keep_state_and_data, [{reply, From, Result}]};
+native({call, From}, startup_metadata, State) ->
+    {keep_state_and_data, [{reply, From, {State#state.last_rebuild, false}}]};
+
+native({call, _From}, Shutdown, State) when Shutdown == close; Shutdown == destroy ->
+    {stop_and_reply, normal, [{reply, From, ok}]};
+
+native(cast, {prompt, rebuild_start}, State) ->
     GUID = leveled_util:generate_uuid(),
     ?STD_LOG(ks007, [rebuild_start, GUID]),
-    {next_state, native, State#state{current_guid = GUID}};
-native({prompt, rebuild_complete}, State = #state{root_path = RP}) when
+    {keep_state, State#state{current_guid = GUID}};
+
+native({call, From}, current_status, State) ->
+    {keep_state_and_data, [{reply, From, {native, State#state.current_guid}}]};
+
+native(cast, {prompt, rebuild_complete}, State = #state{root_path = RP}) when
     RP =/= undefined
 ->
     GUID = State#state.current_guid,
@@ -834,24 +855,24 @@ native({prompt, rebuild_complete}, State = #state{root_path = RP}) when
             last_rebuild = LastRebuild
         }
     ),
-    {next_state, native, State#state{last_rebuild = LastRebuild}}.
+    {keep_state, State#state{last_rebuild = LastRebuild}}.
 
-handle_sync_event(
-    bucket_list, _From, StateName, State = #state{store = Store}
+handle_event(
+    {call, From}, bucket_list, From, State = #state{store = Store}
 ) when is_pid(Store) ->
     Folder = bucket_list(State#state.store_type, Store),
-    {reply, Folder, StateName, State};
-handle_sync_event(current_status, _From, StateName, State) ->
-    {reply, {StateName, State#state.current_guid}, StateName, State};
-handle_sync_event(ping, _From, StateName, State) ->
-    {reply, pong, StateName, State}.
+    {keep_state_and_data, [{reply, From, Folder}]};
 
-handle_event({log_level, LogLevels}, StateName, State) ->
+handle_event({call, From}, ping, State) ->
+    {keep_state_and_data, [{reply, From, pong}]};
+
+handle_event(cast, {log_level, LogLevels}, StateName, State) ->
     ok = aae_util:set_loglevel(LogLevels),
-    {next_state, StateName, State}.
+    keep_state_and_data.
 
 handle_info(_Msg, StateName, State) ->
     {next_state, StateName, State}.
+
 
 terminate(normal, StateName, State = #state{root_path = RP}) when
     StateName =/= native, RP =/= undefined
