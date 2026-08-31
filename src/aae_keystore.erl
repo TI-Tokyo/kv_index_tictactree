@@ -17,21 +17,20 @@
 -behaviour(gen_statem).
 
 -include("aae.hrl").
+-include_lib("kernel/include/logger.hrl").
 
 -export([
     init/1,
     handle_event/4,
     terminate/3,
-    code_change/4
+    code_change/4,
+    callback_mode/0
 ]).
 
 -export([
     loading/3,
-    loading/4,
     parallel/3,
-    parallel/4,
-    native/3,
-    native/4
+    native/3
 ]).
 
 -export(
@@ -62,6 +61,25 @@
     generate_treesegment/1,
     value/3
 ]).
+
+-export_type(
+    [
+        leveled_options/0,
+        parallel_stores/0,
+        native_stores/0,
+        manifest/0,
+        objectspec/0,
+        value_element/0,
+        range_limiter/0,
+        segment_limiter/0,
+        modified_limiter/0,
+        count_limiter/0,
+        rebuild_prompts/0,
+        bucket/0,
+        key/0,
+        fold_fun/0
+    ]
+).
 
 callback_mode() ->
     state_functions.
@@ -260,25 +278,6 @@ callback_mode() ->
 % A request for a value element to be returned from a value, and the
 % function to apply to the f(Bucket, Key) for elements where the item
 % needs to be calculated (like IndexN in native stores)
-
--export_type(
-    [
-        leveled_options/0,
-        parallel_stores/0,
-        native_stores/0,
-        manifest/0,
-        objectspec/0,
-        value_element/0,
-        range_limiter/0,
-        segment_limiter/0,
-        modified_limiter/0,
-        count_limiter/0,
-        rebuild_prompts/0,
-        bucket/0,
-        key/0,
-        fold_fun/0
-    ]
-).
 
 %%%============================================================================
 %%% API
@@ -608,7 +607,7 @@ loading(
 loading(
     {call, From},
     {fold, Range, Segments, LMD, Count, FoldFun, InitAcc, Elements},
-    State = #state{
+    #state{
         store_type = StoreType, store = Store
     }
 ) when ?IS_PARALLEL(StoreType), is_pid(Store) ->
@@ -627,7 +626,7 @@ loading(
 loading(
     {call, From},
     {fetch_clock, Bucket, Key},
-    State = #state{
+    #state{
         store_type = StoreType, store = Store
     }
 ) when ?IS_PARALLEL(StoreType), is_pid(Store) ->
@@ -831,7 +830,7 @@ native(
 native({call, From}, startup_metadata, State) ->
     {keep_state_and_data, [{reply, From, {State#state.last_rebuild, false}}]};
 
-native({call, _From}, Shutdown, State) when Shutdown == close; Shutdown == destroy ->
+native({call, From}, Shutdown, _State) when Shutdown == close; Shutdown == destroy ->
     {stop_and_reply, normal, [{reply, From, ok}]};
 
 native(cast, {prompt, rebuild_start}, State) ->
@@ -858,20 +857,17 @@ native(cast, {prompt, rebuild_complete}, State = #state{root_path = RP}) when
     {keep_state, State#state{last_rebuild = LastRebuild}}.
 
 handle_event(
-    {call, From}, bucket_list, From, State = #state{store = Store}
+    {call, From}, bucket_list, _, State = #state{store = Store}
 ) when is_pid(Store) ->
     Folder = bucket_list(State#state.store_type, Store),
     {keep_state_and_data, [{reply, From, Folder}]};
 
-handle_event({call, From}, ping, State) ->
+handle_event({call, From}, ping, _, _State) ->
     {keep_state_and_data, [{reply, From, pong}]};
 
-handle_event(cast, {log_level, LogLevels}, StateName, State) ->
+handle_event(cast, {log_level, LogLevels}, _, _State) ->
     ok = aae_util:set_loglevel(LogLevels),
     keep_state_and_data.
-
-handle_info(_Msg, StateName, State) ->
-    {next_state, StateName, State}.
 
 
 terminate(normal, StateName, State = #state{root_path = RP}) when
@@ -2146,12 +2142,6 @@ timed_bulk_put(Store, ObjectSpecs, StoreType) ->
     ),
     % Return the sublists without the duplicate
     SubLists.
-
-coverage_cheat_test() ->
-    ok = load_pause(pause),
-    State = #state{store_type = leveled_so},
-    {next_state, native, State} = handle_info(null, native, State),
-    {ok, native, State} = code_change(null, native, State, null).
 
 dumb_value_test() ->
     V = generate_value(
