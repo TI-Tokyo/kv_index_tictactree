@@ -339,9 +339,11 @@ clean_subdir(DirPath) ->
                         case filelib:is_dir(File) of
                             true ->
                                 clean_subdir(File),
-                                file:del_dir(File);
+                                _ = file:del_dir(File),
+                                ok;
                             false ->
-                                file:delete(File)
+                                _ = file:delete(File),
+                                ok
                         end,
                     io:format("Success deleting ~s~n", [File])
                 end,
