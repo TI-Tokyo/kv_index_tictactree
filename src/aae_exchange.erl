@@ -1346,7 +1346,7 @@ clean_exit_ontimeout_test() ->
         exchange_type = full
     },
     State1 = State0#state{pending_state = timeout},
-    {stop, normal, State1} = waiting_all_results(timeout, State0).
+    {stop, normal, State1} = waiting_all_results(cast, timeout, State0).
 
 avoid_multiple_merge_test() ->
     EmptyP = leveled_tictac:new_tree(pink, xxsmall),

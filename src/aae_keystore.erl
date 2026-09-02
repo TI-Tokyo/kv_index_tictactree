@@ -21,7 +21,6 @@
 
 -export([
     init/1,
-    handle_event/4,
     terminate/3,
     code_change/4,
     callback_mode/0
@@ -457,20 +456,13 @@ store_prompt(Pid, Prompt) ->
 %% Get the state and the current GUID
 store_currentstatus(Pid) ->
     % eqwalizer:ignore ... wait_on_sync will mask the type checking
-    {status, Pid, _Mod, Misc} = sys:get_status(Pid),
-    StateName = extract_statename(Misc),
-    GUID = aae_controller:wait_on_sync(
+    aae_controller:wait_on_sync(
         gen_statem,
         call,
         Pid,
         current_status,
         ?SYNC_TIMEOUT
-    ),
-    {StateName, GUID}.
-
-extract_statename(Misc) ->
-    ?LOG_NOTICE("Misc: ~p", [Misc]),
-    extracted_statename.
+    ).
 
 -spec store_fold(
     pid(),
@@ -583,6 +575,12 @@ init([Opts]) ->
                 last_rebuild = Manifest0#manifest.last_rebuild
             }}
     end.
+
+loading({call, From}, ping, _State) ->
+    {keep_state_and_data, [{reply, From, pong}]};
+
+loading({call, From}, current_status, State) ->
+    {keep_state_and_data, [{reply, From, {loading, State#state.current_guid}}]};
 
 loading(
     {call, From},
@@ -730,6 +728,12 @@ loading(cast, {qload, ObjectSpecs}, State = #state{store_type = StoreType}) when
     keep_state_and_data.
 
 
+parallel({call, From}, ping, _State) ->
+    {keep_state_and_data, [{reply, From, pong}]};
+
+parallel({call, From}, current_status, State) ->
+    {keep_state_and_data, [{reply, From, {parallel, State#state.current_guid}}]};
+
 parallel(
     {call, From},
     {fold, Range, Segments, LMD, Count, FoldFun, InitAcc, Elements},
@@ -761,16 +765,19 @@ parallel(
 ->
     IsEmpty = is_empty(StoreType, State#state.store),
     {keep_state_and_data, [{reply, From, {State#state.last_rebuild, IsEmpty}}]};
+
 parallel(
     {call, From},
     Shutdown, State = #state{store_type = StoreType}) when
-    ?IS_PARALLEL(StoreType), Shutdown == close orelse Shutdown == destroy
+    ?IS_PARALLEL(StoreType) andalso (Shutdown == close orelse Shutdown == destroy)
 ->
     ok = close_store(StoreType, State#state.store, Shutdown),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
-parallel({call, From}, current_status, State) ->
-    {keep_state_and_data, [{reply, From, {parallel, State#state.current_guid}}]};
+parallel({call, From}, bucket_list, #state{store_type = StoreType,
+                                           store = Store}) ->
+    Folder = bucket_list(StoreType, Store),
+    {keep_state_and_data, [{reply, From, Folder}]};
 
 parallel(
     cast, {mput, ObjectSpecs}, State = #state{store_type = StoreType, store = Store}
@@ -807,8 +814,18 @@ parallel(cast, {prompt, rebuild_start}, State = #state{root_path = RP}) when
         load_store = Store,
         load_guid = GUID,
         load_disklog = LoadLog
-    }}.
+    }};
 
+parallel(cast, {log_level, LogLevels}, _State) ->
+    ok = aae_util:set_loglevel(LogLevels),
+    keep_state_and_data.
+
+
+native({call, From}, ping, _State) ->
+    {keep_state_and_data, [{reply, From, pong}]};
+
+native({call, From}, current_status, State) ->
+    {keep_state_and_data, [{reply, From, {native, State#state.current_guid}}]};
 
 native(
     {call, From},
@@ -830,6 +847,11 @@ native(
 native({call, From}, startup_metadata, State) ->
     {keep_state_and_data, [{reply, From, {State#state.last_rebuild, false}}]};
 
+native({call, From}, bucket_list, #state{store_type = StoreType,
+                                         store = Store}) ->
+    Folder = bucket_list(StoreType, Store),
+    {keep_state_and_data, [{reply, From, Folder}]};
+
 native({call, From}, Shutdown, _State) when Shutdown == close; Shutdown == destroy ->
     {stop_and_reply, normal, [{reply, From, ok}]};
 
@@ -837,9 +859,6 @@ native(cast, {prompt, rebuild_start}, State) ->
     GUID = leveled_util:generate_uuid(),
     ?STD_LOG(ks007, [rebuild_start, GUID]),
     {keep_state, State#state{current_guid = GUID}};
-
-native({call, From}, current_status, State) ->
-    {keep_state_and_data, [{reply, From, {native, State#state.current_guid}}]};
 
 native(cast, {prompt, rebuild_complete}, State = #state{root_path = RP}) when
     RP =/= undefined
@@ -854,18 +873,9 @@ native(cast, {prompt, rebuild_complete}, State = #state{root_path = RP}) when
             last_rebuild = LastRebuild
         }
     ),
-    {keep_state, State#state{last_rebuild = LastRebuild}}.
+    {keep_state, State#state{last_rebuild = LastRebuild}};
 
-handle_event(
-    {call, From}, bucket_list, _, State = #state{store = Store}
-) when is_pid(Store) ->
-    Folder = bucket_list(State#state.store_type, Store),
-    {keep_state_and_data, [{reply, From, Folder}]};
-
-handle_event({call, From}, ping, _, _State) ->
-    {keep_state_and_data, [{reply, From, pong}]};
-
-handle_event(cast, {log_level, LogLevels}, _, _State) ->
+native(cast, {log_level, LogLevels}, _State) ->
     ok = aae_util:set_loglevel(LogLevels),
     keep_state_and_data.
 
