@@ -2,13 +2,13 @@
 %%
 %% There are two primary types of exchange sorted
 %% - a full exchange aimed at implementations with cached trees, where the
-%% cached trees represent all the data in the location, and the comparion is
+%% cached trees represent all the data in the location, and the comparison is
 %% between two complete data sets
 %% - a partial exchange where it is expected that trees will be dynamically
 %% created covering a subset of data within the location
 %%
 %% The full exchange assumes access to cached trees, with a low cost of
-%% repeated access, and a relatively high proportion fo the overall cost in
+%% repeated access, and a relatively high proportion for the overall cost in
 %% network bandwitdh.  These exchanges go through the following process:
 %%
 %% - Root Compare (x n)
@@ -643,7 +643,8 @@ waiting_all_results(cast, {reply, Result, Colour}, State) ->
                 ),
             {next_state, waiting_all_results, State0, Timeout}
     end;
-waiting_all_results(cast, UnexpectedResponse, State) ->
+waiting_all_results(CastOrTimeout, UnexpectedResponse, State)
+  when CastOrTimeout =:= cast; CastOrTimeout =:= timeout ->
     % timeout expected here, but also may get errors from vnode - such as
     % {error, mailbox_overload} when vnode has entered overload state.  Not
     % possible to complete exchange so stop
@@ -661,7 +662,7 @@ waiting_all_results(cast, UnexpectedResponse, State) ->
         ]
     ),
     ReplyState =
-        case UnexpectedResponse of
+        case CastOrTimeout of
             timeout ->
                 timeout;
             _ ->
