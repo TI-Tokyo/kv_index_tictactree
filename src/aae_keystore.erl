@@ -766,18 +766,18 @@ parallel(
     IsEmpty = is_empty(StoreType, State#state.store),
     {keep_state_and_data, [{reply, From, {State#state.last_rebuild, IsEmpty}}]};
 
-parallel(
-    {call, From},
-    Shutdown, State = #state{store_type = StoreType}) when
-    ?IS_PARALLEL(StoreType) andalso (Shutdown == close orelse Shutdown == destroy)
-->
-    ok = close_store(StoreType, State#state.store, Shutdown),
-    {stop_and_reply, normal, [{reply, From, ok}], State};
-
 parallel({call, From}, bucket_list, #state{store_type = StoreType,
                                            store = Store}) ->
     Folder = bucket_list(StoreType, Store),
     {keep_state_and_data, [{reply, From, Folder}]};
+
+parallel(
+    {call, From},
+    Shutdown, State = #state{store_type = StoreType}) when
+    ?IS_PARALLEL(StoreType) andalso ((Shutdown == close) orelse (Shutdown == destroy))
+->
+    ok = close_store(StoreType, State#state.store, Shutdown),
+    {stop_and_reply, normal, [{reply, From, ok}], State};
 
 parallel(
     cast, {mput, ObjectSpecs}, State = #state{store_type = StoreType, store = Store}
