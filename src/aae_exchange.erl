@@ -599,6 +599,8 @@ clock_compare(
     RepairFun(RepairKeys),
     {stop, normal, State#state{key_deltas = RepairKeys}}.
 
+waiting_all_results(info, {'$gen_event', Reply}, State) ->
+    waiting_all_results(cast, Reply, State);
 waiting_all_results(cast, {reply, not_supported, Colour}, State) ->
     ?STD_LOG(ex010, [State#state.exchange_id, Colour, State#state.purpose]),
     {stop, normal, State#state{pending_state = not_supported}};
