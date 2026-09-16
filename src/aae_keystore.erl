@@ -727,7 +727,6 @@ loading(cast, {qload, ObjectSpecs}, State = #state{store_type = StoreType}) when
     do_load(StoreType, State#state.load_store, ObjectSpecs),
     keep_state_and_data.
 
-
 parallel({call, From}, ping, _State) ->
     {keep_state_and_data, [{reply, From, pong}]};
 
@@ -820,7 +819,6 @@ parallel(cast, {log_level, LogLevels}, _State) ->
     ok = aae_util:set_loglevel(LogLevels),
     keep_state_and_data.
 
-
 native({call, From}, ping, _State) ->
     {keep_state_and_data, [{reply, From, pong}]};
 
@@ -878,7 +876,6 @@ native(cast, {prompt, rebuild_complete}, State = #state{root_path = RP}) when
 native(cast, {log_level, LogLevels}, _State) ->
     ok = aae_util:set_loglevel(LogLevels),
     keep_state_and_data.
-
 
 terminate(normal, StateName, State = #state{root_path = RP}) when
     StateName =/= native, RP =/= undefined

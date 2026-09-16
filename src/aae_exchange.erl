@@ -675,8 +675,9 @@ waiting_all_results(cast, {reply, Result, Colour}, State) ->
                 ),
             {next_state, waiting_all_results, State0, Timeout}
     end;
-waiting_all_results(CastOrTimeout, UnexpectedResponse, State)
-  when CastOrTimeout =:= cast; CastOrTimeout =:= timeout ->
+waiting_all_results(CastOrTimeout, UnexpectedResponse, State) when
+    CastOrTimeout =:= cast; CastOrTimeout =:= timeout
+->
     % timeout expected here, but also may get errors from vnode - such as
     % {error, mailbox_overload} when vnode has entered overload state.  Not
     % possible to complete exchange so stop
@@ -1560,7 +1561,8 @@ connect_error_test() ->
 waiting_for_error_test() ->
     {stop, normal, _S0} =
         waiting_all_results(
-            cast, {reply, {error, query_backlog}, blue},
+            cast,
+            {reply, {error, query_backlog}, blue},
             #state{
                 exchange_type = full,
                 merge_fun = fun merge_clocks/2
