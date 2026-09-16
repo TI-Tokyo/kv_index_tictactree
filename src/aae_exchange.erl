@@ -599,6 +599,36 @@ clock_compare(
     RepairFun(RepairKeys),
     {stop, normal, State#state{key_deltas = RepairKeys}}.
 
+%% This special function clause is an interim workaround that should
+%% be removed once riak_kv_vnode:aae_send/1 is modified to send a
+%% statem-specific message.
+%%
+%% Martin Sumner explains
+%% (https://github.com/OpenRiak/kv_index_tictactree/pull/17#issuecomment-5696293088):
+%%
+%% When the exchange is initiated it is passed an AAE send fun (to be
+%% used by remote processes to reply to the exchange), within Riak
+%% this is generated from riak_kv_vnode:aae_send/1.
+%%
+%% When this is called by the exchange, it creates the sender to be
+%% used for response messages as `{fsm, undefined, self()}`. So the
+%% exchange is identified as an FSM (not a STATEM) within Riak.
+%%
+%% When the vnode processes an AAE message (e.g. a request to
+%% fetch_root), it will response with riak_core_vnode:reply/2.  This
+%% will use riak_core_send_msg:bang_unreliable/2 with `{'$gen_event',
+%% Event}` as the 2nd arg.
+%%
+%% So when used in Riak the responses that are expected in the
+%% waiting_all_results state will be received as messages to a gen_fsm
+%% not a gen_statem. Hence they arrive as standard process info
+%% messages, which then need to be considered as cast responses used
+%% when kv_index_tictcatree is tested as a standalone application.
+%%
+%% Although this is a bit hacky ... riak_core doesn't have message
+%% handling for gen_statem at present; and also during transition an
+%% exchange could be either a gen_fsm or a gen_statem. So it probably
+%% makes sense to use this workaround for now.
 waiting_all_results(info, {'$gen_event', Reply}, State) ->
     waiting_all_results(cast, Reply, State);
 waiting_all_results(cast, {reply, not_supported, Colour}, State) ->
