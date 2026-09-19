@@ -644,6 +644,12 @@ loading(
 ->
     ok = delete_store(StoreType, LoadStore),
     ok = close_store(StoreType, Store, Shutdown),
+    store_manifest(
+        State#state.root_path,
+        #manifest{
+            current_guid = State#state.current_guid,
+            last_rebuild = State#state.last_rebuild
+        }),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
 loading({call, From}, current_status, State) ->
@@ -776,6 +782,12 @@ parallel(
     ?IS_PARALLEL(StoreType) andalso ((Shutdown == close) orelse (Shutdown == destroy))
 ->
     ok = close_store(StoreType, State#state.store, Shutdown),
+    store_manifest(
+        State#state.root_path,
+        #manifest{
+            current_guid = State#state.current_guid,
+            last_rebuild = State#state.last_rebuild
+        }),
     {stop_and_reply, normal, [{reply, From, ok}], State};
 
 parallel(
@@ -877,16 +889,6 @@ native(cast, {log_level, LogLevels}, _State) ->
     ok = aae_util:set_loglevel(LogLevels),
     keep_state_and_data.
 
-terminate(normal, StateName, State = #state{root_path = RP}) when
-    StateName =/= native, RP =/= undefined
-->
-    store_manifest(
-        RP,
-        #manifest{
-            current_guid = State#state.current_guid,
-            last_rebuild = State#state.last_rebuild
-        }
-    );
 terminate(_Reason, _StateName, _State) ->
     ok.
 
