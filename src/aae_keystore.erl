@@ -644,7 +644,7 @@ loading(
 ->
     ok = delete_store(StoreType, LoadStore),
     ok = close_store(StoreType, Store, Shutdown),
-    store_manifest(
+    ok = store_manifest(
         State#state.root_path,
         #manifest{
             current_guid = State#state.current_guid,
@@ -782,7 +782,7 @@ parallel(
     ?IS_PARALLEL(StoreType) andalso ((Shutdown == close) orelse (Shutdown == destroy))
 ->
     ok = close_store(StoreType, State#state.store, Shutdown),
-    store_manifest(
+    ok = store_manifest(
         State#state.root_path,
         #manifest{
             current_guid = State#state.current_guid,
