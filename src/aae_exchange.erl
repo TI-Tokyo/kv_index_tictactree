@@ -123,7 +123,8 @@
 -export([
     init/1,
     callback_mode/0,
-    terminate/3
+    terminate/3,
+    format_status/1
 ]).
 
 -export([
@@ -778,6 +779,15 @@ terminate(normal, StateName, State = #state{reply_fun = ReplyFun}) when
     end,
     ReplyFun({State#state.pending_state, length(State#state.key_deltas)}).
 
+format_status(State = #state{blue_acc = BA, pink_acc = PA}) ->
+    State#state{
+        blue_acc = accfmt(BA),
+        pink_acc = accfmt(PA)
+    }.
+accfmt(undefined) ->
+    undefined;
+accfmt(A) ->
+    length(A).
 
 %%%============================================================================
 %%% External Functions
