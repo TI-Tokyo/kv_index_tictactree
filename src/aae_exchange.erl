@@ -123,8 +123,7 @@
 -export([
     init/1,
     callback_mode/0,
-    terminate/3,
-    code_change/4
+    terminate/3
 ]).
 
 -export([
@@ -779,8 +778,6 @@ terminate(normal, StateName, State = #state{reply_fun = ReplyFun}) when
     end,
     ReplyFun({State#state.pending_state, length(State#state.key_deltas)}).
 
-code_change(_OldVsn, StateName, State, _Extra) ->
-    {ok, StateName, State}.
 
 %%%============================================================================
 %%% External Functions

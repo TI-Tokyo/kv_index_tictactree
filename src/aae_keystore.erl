@@ -22,7 +22,6 @@
 -export([
     init/1,
     terminate/3,
-    code_change/4,
     callback_mode/0
 ]).
 
@@ -891,9 +890,6 @@ native(cast, {log_level, LogLevels}, _State) ->
 
 terminate(_Reason, _StateName, _State) ->
     ok.
-
-code_change(_OldVsn, StateName, State, _Extra) ->
-    {ok, StateName, State}.
 
 %%%============================================================================
 %%% Key Codec
