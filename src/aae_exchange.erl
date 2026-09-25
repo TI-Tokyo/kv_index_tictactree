@@ -8,7 +8,7 @@
 %% created covering a subset of data within the location
 %%
 %% The full exchange assumes access to cached trees, with a low cost of
-%% repeated access, and a relatively high proportion for the overall cost in
+%% repeated access, and a relatively high proportion of the overall cost in
 %% network bandwitdh.  These exchanges go through the following process:
 %%
 %% - Root Compare (x n)
@@ -779,15 +779,16 @@ terminate(normal, StateName, State = #state{reply_fun = ReplyFun}) when
     end,
     ReplyFun({State#state.pending_state, length(State#state.key_deltas)}).
 
-format_status(State = #state{blue_acc = BA, pink_acc = PA}) ->
-    State#state{
+-spec format_status(State) -> State when State :: #{state => #state{}}.
+format_status(SState = #{state := State = #state{blue_acc = BA, pink_acc = PA}}) ->
+    SState#{state => State#state{
         blue_acc = accfmt(BA),
         pink_acc = accfmt(PA)
-    }.
+    }}.
 accfmt(undefined) ->
     undefined;
 accfmt(A) ->
-    length(A).
+    lists:flatten(io_lib:format("~b bytes", [length(A)])).
 
 %%%============================================================================
 %%% External Functions

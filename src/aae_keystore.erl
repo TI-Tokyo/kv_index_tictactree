@@ -9,7 +9,7 @@
 %%
 %% - native - in this case the store uses a reference back to the vnode
 %% itself, and resolves queries by querying the vnode.  Only a Riak with a
-%% leveled backend can be run in native mode.  In antive mode there is no
+%% leveled backend can be run in native mode.  In native mode there is no
 %% duplication of information wihtin the key store (which is empty)
 
 -module(aae_keystore).
