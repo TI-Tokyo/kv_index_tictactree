@@ -513,7 +513,7 @@ store_loglevel(Pid, LogLevels) ->
     gen_statem:cast(Pid, {log_level, LogLevels}).
 
 %%%============================================================================
-%%% gen_fsm callbacks
+%%% gen_fsm^H^H^Hstatem callbacks
 %%%============================================================================
 
 init([Opts]) ->
@@ -650,9 +650,6 @@ loading(
             last_rebuild = State#state.last_rebuild
         }),
     {stop_and_reply, normal, [{reply, From, ok}], State};
-
-loading({call, From}, current_status, State) ->
-    {keep_state_and_data, [{reply, From, {loading, State#state.current_guid}}]};
 
 loading(cast, {mput, ObjectSpecs}, State = #state{store_type = StoreType}) when
     ?IS_PARALLEL(StoreType)
@@ -2183,5 +2180,35 @@ generate_objectspecs(Op, B, KeyList) ->
             end
         end,
     lists:map(FoldFun, KeyList).
+
+for_coverages_sake_test() ->
+    State = #state{current_guid = "fa"},
+    {keep_state_and_data, [{reply, from, {loading, "fa"}}]} =
+        loading({call, from}, current_status, State),
+    {keep_state_and_data, [{reply, from, {parallel, "fa"}}]} =
+        parallel({call, from}, current_status, State),
+    {keep_state_and_data, [{reply, from, {native, "fa"}}]} =
+        native({call, from}, current_status, State),
+
+    {keep_state_and_data, [{reply, from, pong}]} =
+        loading({call, from}, ping, State),
+    {keep_state_and_data, [{reply, from, pong}]} =
+        parallel({call, from}, ping, State),
+    {keep_state_and_data, [{reply, from, pong}]} =
+        native({call, from}, ping, State),
+
+    keep_state_and_data =
+        parallel(cast, {log_level, [error]}, State),
+    keep_state_and_data =
+        native(cast, {log_level, [error]}, State),
+
+    {ok, null} = check_objectspec(
+                   <<"b">>, <<"k">>, #objectspec{op = add,
+                                                 segment_id = 1,
+                                                 bucket = <<"b">>, key = <<"k">>}),
+    false = check_objectspec(
+              <<"b">>, <<"k">>, #objectspec{op = add,
+                                            segment_id = 1,
+                                            bucket = <<"b">>, key = <<"not-k">>}).
 
 -endif.

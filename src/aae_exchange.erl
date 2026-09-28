@@ -780,15 +780,19 @@ terminate(normal, StateName, State = #state{reply_fun = ReplyFun}) when
     ReplyFun({State#state.pending_state, length(State#state.key_deltas)}).
 
 -spec format_status(State) -> State when State :: #{state => #state{}}.
-format_status(SState = #{state := State = #state{blue_acc = BA, pink_acc = PA}}) ->
-    SState#{state => State#state{
-        blue_acc = accfmt(BA),
-        pink_acc = accfmt(PA)
-    }}.
+format_status(
+    SState = #{state := State = #state{blue_acc = BA, pink_acc = PA}}
+) ->
+    SState#{
+        state => State#state{
+            blue_acc = accfmt(BA),
+            pink_acc = accfmt(PA)
+        }
+    }.
 accfmt(undefined) ->
     undefined;
 accfmt(A) ->
-    lists:flatten(io_lib:format("~b bytes", [length(A)])).
+    lists:flatten(io_lib:format("~b items", [length(A)])).
 
 %%%============================================================================
 %%% External Functions
@@ -1577,15 +1581,16 @@ waiting_for_error_test() ->
             }
         ).
 
-%% coverage_cheat_test() ->
-%%     {next_state, prepare, _State0} =
-%%         gen_statem:call(null, prepare, #state{exchange_type = full}),
-%%     {reply, ok, prepare, _State1} =
-%%         gen_statem:call(null, nobody, prepare, #state{exchange_type = full}),
-%%     {next_state, prepare, _State2} =
-%%         handle_info(null, prepare, #state{exchange_type = full}),
-%%     {ok, prepare, _State3} =
-%%         code_change(null, prepare, #state{exchange_type = full}, null),
-%%     [root_compare, branch_compare] = insync_responses().
+for_coverages_sake_test() ->
+    [root_compare, branch_compare] =
+        insync_responses(),
+    {stop, normal, #state{pending_state = error}} =
+        waiting_all_results(info, {'$gen_event', unexpected_msg}, #state{}),
+    {stop, normal, #state{pending_state = not_supported}} =
+        waiting_all_results(
+            cast, {reply, not_supported, some_colour}, #state{}
+        ),
+    Status = #{state => #state{blue_acc = [{1, <<"123">>}]}},
+    #{state := #state{blue_acc = "1 items"}} = format_status(Status).
 
 -endif.
