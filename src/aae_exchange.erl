@@ -1585,12 +1585,18 @@ for_coverages_sake_test() ->
     [root_compare, branch_compare] =
         insync_responses(),
     {stop, normal, #state{pending_state = error}} =
-        waiting_all_results(info, {'$gen_event', unexpected_msg}, #state{}),
+        waiting_all_results(info, {'$gen_event', unexpected_msg}, #state{
+            exchange_type = full
+        }),
     {stop, normal, #state{pending_state = not_supported}} =
         waiting_all_results(
-            cast, {reply, not_supported, some_colour}, #state{}
+            cast, {reply, not_supported, some_colour}, #state{
+                exchange_type = full
+            }
         ),
-    Status = #{state => #state{blue_acc = [{1, <<"123">>}]}},
+    Status = #{
+        state => #state{blue_acc = [{1, <<"123">>}], exchange_type = full}
+    },
     #{state := #state{blue_acc = "1 items"}} = format_status(Status).
 
 -endif.

@@ -1286,7 +1286,7 @@ do_fetchclock(leveled_so, Store, Bucket, Key, Seg) ->
     % eqwalizer:ignore ... it is a vector clock - but can't prove it
     Folder().
 
--spec bucket_list(parallel_stores(), pid()) -> {async, fun(() -> any())}.
+-spec bucket_list(parallel_stores() | native_stores(), pid()) -> {async, fun(() -> any())}.
 %% @doc
 %% List buckets in backend - using fast skipping method native to leveled if
 %% the backend is key-ordered.
@@ -2182,7 +2182,8 @@ generate_objectspecs(Op, B, KeyList) ->
     lists:map(FoldFun, KeyList).
 
 for_coverages_sake_test() ->
-    State = #state{current_guid = "fa"},
+    State = #state{store_type = leveled_so,
+                   current_guid = "fa"},
     {keep_state_and_data, [{reply, from, {loading, "fa"}}]} =
         loading({call, from}, current_status, State),
     {keep_state_and_data, [{reply, from, {parallel, "fa"}}]} =
